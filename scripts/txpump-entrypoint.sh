@@ -12,13 +12,15 @@ types="$(printf '%s' "${types}" | tr -d '[:space:]')"
 # need the pool key hash.
 case ",${types}," in
   *,delegation,*)
-    pool_key="/configs/keys/cold.vkey"
-    if [ ! -f "${pool_key}" ]; then
-      echo "txpump: delegation pool key is missing" >&2
-      exit 1
+    if [ -z "${TXPUMP_DELEGATION_POOL_KEY_HASH:-}" ]; then
+      pool_key="/configs/keys/cold.vkey"
+      if [ ! -f "${pool_key}" ]; then
+        echo "txpump: delegation pool key is missing" >&2
+        exit 1
+      fi
+      TXPUMP_DELEGATION_POOL_KEY_HASH="$(cardano-cli latest stake-pool id --cold-verification-key-file "${pool_key}" --output-format hex)"
+      export TXPUMP_DELEGATION_POOL_KEY_HASH
     fi
-    TXPUMP_DELEGATION_POOL_KEY_HASH="$(cardano-cli latest stake-pool id --cold-verification-key-file "${pool_key}" --output-format hex)"
-    export TXPUMP_DELEGATION_POOL_KEY_HASH
     ;;
 esac
 

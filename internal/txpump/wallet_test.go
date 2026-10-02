@@ -213,7 +213,7 @@ func TestWalletRollbackRevivesSeededInputWithSnapshotAddress(t *testing.T) {
 				TxHash:  source.TxHash,
 				Index:   source.Index,
 				Amount:  source.Amount,
-				address: key.Address,
+				Address: key.Address,
 			},
 		},
 		nil,

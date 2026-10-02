@@ -157,13 +157,13 @@ func TestBuildPayment_IsDeterministic(t *testing.T) {
 func TestBuildPayment_MultipleInputs(t *testing.T) {
 	p := PaymentParams{
 		Inputs: []UTxO{
-			{TxHash: sampleHash, Index: 0, Amount: 3_000_000},
-			{TxHash: sampleHash, Index: 1, Amount: 3_000_000},
+			{TxHash: sampleHash, Index: 0, Amount: 3_100_000},
+			{TxHash: sampleHash, Index: 1, Amount: 3_100_000},
 		},
 		ToAddr:     sampleAddr,
 		ChangeAddr: sampleAddr,
 		SendAmount: 5_000_000,
-		Change:     800_000,
+		Change:     1_000_000,
 	}
 	txBytes, _, err := BuildPayment(p)
 	require.NoError(t, err)

@@ -22,7 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestProtoFromAddr_Unix(t *testing.T) {
+func TestProtoFromAddr(t *testing.T) {
 	cases := []struct {
 		addr  string
 		proto string

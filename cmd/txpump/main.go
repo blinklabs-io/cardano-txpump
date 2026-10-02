@@ -75,14 +75,18 @@ func main() {
 			logger.Error("no genesis signing keys found; txpump requires spendable keys")
 			os.Exit(1)
 		}
+		keysByAddress := make(map[string]*txpump.UTxOKey, len(signingKeys))
 		keysByHash := make(map[string]*txpump.UTxOKey, len(signingKeys))
 		for _, signingKey := range signingKeys {
-			expectedHash := common.Blake2b256Hash(signingKey.Address).
-				String()
-			keysByHash[expectedHash] = signingKey
+			keysByAddress[hex.EncodeToString(signingKey.Address)] = signingKey
+			keysByHash[common.Blake2b256Hash(signingKey.Address).String()] = signingKey
 		}
 		for i, u := range utxos {
-			if signingKey := keysByHash[u.TxHash]; signingKey != nil {
+			signingKey := keysByAddress[hex.EncodeToString(u.Address)]
+			if signingKey == nil && len(u.Address) == 0 {
+				signingKey = keysByHash[u.TxHash]
+			}
+			if signingKey != nil {
 				utxos[i].SigningKey = signingKey
 			}
 		}
@@ -98,7 +102,7 @@ func main() {
 		}
 		if len(spendable) == 0 {
 			logger.Error(
-				"no genesis UTxOs matched loaded signing keys",
+				"no genesis UTxOs matched loaded signing keys; explicit UTxO lists must include an address matching a loaded key",
 				"utxo_count", len(utxos),
 				"key_count", len(signingKeys),
 			)

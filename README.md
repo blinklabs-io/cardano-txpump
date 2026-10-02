@@ -18,4 +18,10 @@ variables. For a local run, set at least `TXPUMP_NODE_ADDR` and
 settings are documented on the fields and environment parsing in
 [`internal/txpump/config.go`](internal/txpump/config.go).
 
+`TXPUMP_GENESIS_UTXO_FILE` accepts a directory of generated JSON files or a
+single Shelley genesis JSON file. The matching `genesis.<n>.skey`, `.vkey`, and
+`.addr.info` files are loaded from that directory or the JSON file's parent.
+Explicit UTxO arrays must include an `address` field matching a loaded key to
+be spendable by the command.
+
 The published image is `ghcr.io/blinklabs-io/cardano-txpump:main`.

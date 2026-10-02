@@ -88,7 +88,11 @@ func (p *Pump) Run(ctx context.Context) error {
 	if p.cfg.StartupTimeout > 0 {
 		startupDeadline = time.Now().Add(p.cfg.StartupTimeout)
 		startupTimer = time.NewTimer(p.cfg.StartupTimeout)
-		defer startupTimer.Stop()
+		defer func() {
+			if startupTimer != nil {
+				startupTimer.Stop()
+			}
+		}()
 		startup = startupTimer.C
 	}
 	ready := false
@@ -99,6 +103,10 @@ func (p *Pump) Run(ctx context.Context) error {
 	if err := p.waitForGenesis(ctx, startup); err != nil {
 		return err
 	}
+	if !p.hasEnabledTypes() {
+		stopStartupTimeout(&startupTimer, &startup)
+		startupDeadline = time.Time{}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -106,6 +114,12 @@ func (p *Pump) Run(ctx context.Context) error {
 		case <-startup:
 			return p.readinessTimeoutError()
 		default:
+		}
+		if !ready && p.cfg.StartupTimeout > 0 && startupDeadline.IsZero() &&
+			p.hasEnabledTypes() {
+			startupTimer = time.NewTimer(p.cfg.StartupTimeout)
+			startup = startupTimer.C
+			startupDeadline = time.Now().Add(p.cfg.StartupTimeout)
 		}
 
 		batchSize := IntRange(p.cfg.TxCountMin, p.cfg.TxCountMax)
@@ -163,8 +177,8 @@ func (p *Pump) Run(ctx context.Context) error {
 		ids := p.wallet.PendingIDs()
 		addresses := p.wallet.SigningAddresses()
 		scriptAddress := scriptAddressFromHash(alwaysSucceedsScriptHash())
-		addresses = append(addresses, scriptAddress)
 		if len(addresses) > 0 {
+			addresses = append(addresses, scriptAddress)
 			// The fallback is a cardano-node, where the mempool cannot be
 			// queried (see ReconcileWallet), so pending reservations are kept
 			// until a batch on the primary observes them.
@@ -194,7 +208,7 @@ func (p *Pump) Run(ctx context.Context) error {
 			walletSnapshot := make([]UTxO, 0, len(snapshot))
 			plutusSnapshot := make([]UTxO, 0, len(snapshot))
 			for _, utxo := range snapshot {
-				if bytes.Equal(utxo.address, scriptAddress) {
+				if bytes.Equal(utxo.Address, scriptAddress) {
 					plutusSnapshot = append(plutusSnapshot, utxo)
 				} else {
 					walletSnapshot = append(walletSnapshot, utxo)
@@ -360,6 +374,14 @@ func stopStartupTimeout(timer **time.Timer, deadline *<-chan time.Time) {
 		*timer = nil
 	}
 	*deadline = nil
+}
+
+func (p *Pump) hasEnabledTypes() bool {
+	return len(enabledTypes(
+		p.cfg.Types,
+		p.epochFromSlot(p.currentSlot()),
+		p.cfg.delegationEnabled(),
+	)) > 0
 }
 
 // dialPrimary connects to the primary node address.
@@ -843,7 +865,7 @@ func (p *Pump) submitPlutusLock(client *NodeClient, batchSize int) bool {
 		Amount: plutusLockAmount,
 		// Keep the wallet-controlled address and its key with the script
 		// output so the unlock returns spendable change to the same wallet.
-		address:    append([]byte(nil), changeAddr...),
+		Address:    append([]byte(nil), changeAddr...),
 		SigningKey: inputs[0].SigningKey,
 	})
 	var total uint64
@@ -871,7 +893,7 @@ func (p *Pump) submitPlutusUnlock(client *NodeClient, batchSize int, locked UTxO
 		p.addLockedPlutusUTxO(locked)
 		return false
 	}
-	changeAddr, changeKey := locked.address, locked.SigningKey
+	changeAddr, changeKey := locked.Address, locked.SigningKey
 	if len(changeAddr) == 0 || !changeKey.canSign() {
 		changeAddr, changeKey = collateral[0].SigningKey.Address, collateral[0].SigningKey
 	}
@@ -1016,8 +1038,8 @@ func controlledChangeAddr(inputs []UTxO) []byte {
 		if input.SigningKey != nil && len(input.SigningKey.Address) > 0 {
 			return append([]byte(nil), input.SigningKey.Address...)
 		}
-		if len(input.address) > 0 {
-			return append([]byte(nil), input.address...)
+		if len(input.Address) > 0 {
+			return append([]byte(nil), input.Address...)
 		}
 	}
 	if len(inputs) == 0 {

@@ -255,13 +255,17 @@ func BuildPlutusUnlockTx(
 	}
 	// The ledger requires collateral of at least collateralPercentage (150%)
 	// of the fee.
-	if collateralTotal < fee*3/2 {
+	if fee > math.MaxUint64-fee/2 {
+		return nil, fmt.Errorf("plutus_unlock: fee %d overflows 150%% collateral calculation", fee)
+	}
+	collateralRequired := fee + fee/2
+	if collateralTotal < collateralRequired {
 		return nil, fmt.Errorf(
 			"plutus_unlock: collateral %d does not cover 150%% of fee %d",
 			collateralTotal, fee,
 		)
 	}
-	if total < fee+minSendAmount {
+	if fee > total || total-fee < minSendAmount {
 		return nil, fmt.Errorf(
 			"plutus_unlock: locked amount %d cannot cover fee %d and a change output",
 			total, fee,

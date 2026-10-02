@@ -79,7 +79,7 @@ func TestWorkloadSubmissionsKeepControlledChangeAddress(t *testing.T) {
 			require.Equal(t, controlled, change, "submitted change must remain queryable by the wallet")
 			if workload.name == "plutus lock" {
 				require.Len(t, pump.plutusLocked, 1)
-				require.Equal(t, controlled, pump.plutusLocked[0].address)
+				require.Equal(t, controlled, pump.plutusLocked[0].Address)
 			}
 		})
 	}

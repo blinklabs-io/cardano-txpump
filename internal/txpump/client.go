@@ -264,7 +264,7 @@ func (c *NodeClient) ReconcileWallet(
 				//nolint:gosec // ledger index is bounded by protocol
 				Index:   uint32(id.Idx),
 				Amount:  amount.Uint64(),
-				address: raw,
+				Address: raw,
 			},
 		)
 	}

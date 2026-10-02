@@ -22,7 +22,7 @@ COPY --from=cardano-cli /usr/local/bin/cardano-cli /usr/local/bin/cardano-cli
 COPY --from=cardano-cli /usr/local/lib/ /usr/local/lib/
 ENV LD_LIBRARY_PATH="/usr/local/lib"
 RUN useradd --uid 1000 --create-home --shell /bin/sh txpump && \
-    mkdir -p /logs && chmod 0755 /logs
+    mkdir -p /logs && chown txpump:txpump /logs && chmod 0755 /logs
 COPY --from=build /code/txpump /bin/txpump
 COPY scripts/txpump-entrypoint.sh /bin/txpump-entrypoint.sh
 RUN chmod 0755 /bin/txpump-entrypoint.sh

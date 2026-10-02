@@ -29,9 +29,10 @@ import (
 // GenesisUTxO represents a single pre-funded UTxO from the genesis
 // configuration, as produced by the testnet-generation-tool.
 type GenesisUTxO struct {
-	TxHash string `json:"txHash"`
-	Index  uint32 `json:"index"`
-	Amount uint64 `json:"amount"`
+	TxHash  string `json:"txHash"`
+	Index   uint32 `json:"index"`
+	Amount  uint64 `json:"amount"`
+	Address string `json:"address,omitempty"`
 }
 
 // LoadGenesisUTxOs reads pre-funded UTxOs from a JSON file or directory
@@ -39,8 +40,8 @@ type GenesisUTxO struct {
 //
 // If path is a directory, supported UTxO JSON files are read and unrelated
 // JSON files are skipped. If path is a file, it is read directly. Supported
-// formats are an array of objects with txHash, index, and amount fields or a
-// Shelley genesis file containing initialFunds.
+// formats are an array of objects with txHash, index, amount, and optional
+// address fields or a Shelley genesis file containing initialFunds.
 func LoadGenesisUTxOs(path string) ([]UTxO, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -101,7 +102,32 @@ func loadGenesisFile(path string) ([]UTxO, bool, error) {
 		}
 		utxos := make([]UTxO, len(raw))
 		for i, r := range raw {
-			utxos[i] = UTxO{TxHash: r.TxHash, Index: r.Index, Amount: r.Amount}
+			hashBytes, decodeErr := hex.DecodeString(r.TxHash)
+			if decodeErr != nil || len(hashBytes) != 32 {
+				return nil, true, fmt.Errorf(
+					"UTxO %d has invalid txHash %q: expected 32-byte hex",
+					i, r.TxHash,
+				)
+			}
+			if r.Amount == 0 {
+				return nil, true, fmt.Errorf("UTxO %d has zero amount", i)
+			}
+			var address []byte
+			if r.Address != "" {
+				address, decodeErr = hex.DecodeString(r.Address)
+				if decodeErr != nil || len(address) == 0 {
+					return nil, true, fmt.Errorf(
+						"UTxO %d has invalid address %q: expected non-empty hex",
+						i, r.Address,
+					)
+				}
+			}
+			utxos[i] = UTxO{
+				TxHash:  r.TxHash,
+				Index:   r.Index,
+				Amount:  r.Amount,
+				Address: address,
+			}
 		}
 		return utxos, true, nil
 	case '{':

@@ -3,6 +3,7 @@
 #
 # Binaries for programs and plugins
 cardano-txpump
+txpump
 *.exe
 *.exe~
 *.dll

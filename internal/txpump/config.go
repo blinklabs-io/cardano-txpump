@@ -83,10 +83,9 @@ type Config struct {
 	// startup deadline; the default is 60 seconds.
 	StartupTimeout time.Duration
 
-	// GenesisUTxOFile is a path to a directory (or a single JSON file) containing
-	// initial UTxO entries. When signing keys are present it must be a directory:
-	// LoadSigningKeys globs genesis.*.skey inside it, while LoadGenesisUTxOs
-	// accepts either a directory of JSON files or a single JSON file.
+	// GenesisUTxOFile is a path to a directory or JSON file containing initial
+	// UTxO entries. Signing keys named genesis.<n>.skey and their matching
+	// .vkey/.addr.info files are loaded from this directory or the file's parent.
 	GenesisUTxOFile string
 
 	// GenesisFile is the path to a generated Shelley genesis JSON file or the

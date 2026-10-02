@@ -122,9 +122,18 @@ func LoadSigningKey(dir string) (*UTxOKey, error) {
 	return loadSigningKeyPrefix(prefix)
 }
 
-// LoadSigningKeys reads all genesis UTxO keys from dir. It looks for files
-// named genesis.<n>.skey and their matching .vkey and .addr.info siblings.
-func LoadSigningKeys(dir string) ([]*UTxOKey, error) {
+// LoadSigningKeys reads all genesis UTxO keys next to dir or path. It looks
+// for files named genesis.<n>.skey and their matching .vkey and .addr.info
+// siblings. If path is a JSON file, its parent directory is searched.
+func LoadSigningKeys(path string) ([]*UTxOKey, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat signing key path: %w", err)
+	}
+	dir := path
+	if !info.IsDir() {
+		dir = filepath.Dir(path)
+	}
 	matches, err := filepath.Glob(filepath.Join(dir, "genesis.*.skey"))
 	if err != nil {
 		return nil, fmt.Errorf("glob signing keys: %w", err)

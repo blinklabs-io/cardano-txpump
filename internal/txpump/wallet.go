@@ -25,12 +25,13 @@ import (
 
 // UTxO represents an unspent transaction output.
 type UTxO struct {
-	TxHash      string
-	Index       uint32
-	Amount      uint64   // lovelace
-	SigningKey  *UTxOKey // optional: Ed25519 key for signing inputs from this UTxO
+	TxHash     string
+	Index      uint32
+	Amount     uint64   // lovelace
+	SigningKey *UTxOKey // optional: Ed25519 key for signing inputs from this UTxO
+	// Address associates an explicit UTxO-list entry with its signing key.
+	Address     []byte
 	availableAt time.Time
-	address     []byte
 }
 
 // ErrInsufficientFunds is returned by SelectCoins when the wallet does not
@@ -92,10 +93,11 @@ func (w *Wallet) AddAfter(delay time.Duration, utxos ...UTxO) {
 		return
 	}
 	availableAt := w.currentTime().Add(delay)
-	for i := range utxos {
-		utxos[i].availableAt = availableAt
+	copies := append([]UTxO(nil), utxos...)
+	for i := range copies {
+		copies[i].availableAt = availableAt
 	}
-	w.Add(utxos...)
+	w.Add(copies...)
 }
 
 func (w *Wallet) isAvailable(utxo UTxO, now time.Time) bool {
@@ -121,15 +123,16 @@ func (w *Wallet) Reserve(
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.ensureMaps()
+	outputCopies := append([]UTxO(nil), outputs...)
 	if delay > 0 {
 		at := w.currentTime().Add(delay)
-		for i := range outputs {
-			outputs[i].availableAt = at
+		for i := range outputCopies {
+			outputCopies[i].availableAt = at
 		}
 	}
 	w.pending[id] = pendingTx{
 		inputs:  append([]UTxO(nil), inputs...),
-		outputs: append([]UTxO(nil), outputs...),
+		outputs: outputCopies,
 	}
 }
 
@@ -181,7 +184,7 @@ func (w *Wallet) ReconcileSnapshot(snapshot []UTxO, presence map[string]bool) {
 				u.SigningKey = pending.SigningKey
 			}
 		}
-		if k := w.addresses[string(u.address)]; k != nil {
+		if k := w.addresses[string(u.Address)]; k != nil {
 			u.SigningKey = k
 		}
 		chain[utxoKey(u)] = u
@@ -204,7 +207,9 @@ func (w *Wallet) ReconcileSnapshot(snapshot []UTxO, presence map[string]bool) {
 				// Keep the authoritative snapshot's value and restore only
 				// signing metadata held by the reservation.
 				current := chain[utxoKey(in)]
-				current.SigningKey = in.SigningKey
+				if in.SigningKey != nil {
+					current.SigningKey = in.SigningKey
+				}
 				chain[utxoKey(in)] = current
 			}
 		}
@@ -313,7 +318,13 @@ func (w *Wallet) SelectCoins(targetAmount uint64) ([]UTxO, uint64, error) {
 		}
 	}
 	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Amount > sorted[j].Amount
+		if sorted[i].Amount != sorted[j].Amount {
+			return sorted[i].Amount > sorted[j].Amount
+		}
+		if sorted[i].TxHash != sorted[j].TxHash {
+			return sorted[i].TxHash < sorted[j].TxHash
+		}
+		return sorted[i].Index < sorted[j].Index
 	})
 
 	var selected []UTxO
