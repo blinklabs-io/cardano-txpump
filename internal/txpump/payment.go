@@ -156,6 +156,12 @@ func BuildPayment(p PaymentParams) (txBytes []byte, txID string, err error) {
 			"payment: non-zero change requires a change address",
 		)
 	}
+	if p.Change > 0 && p.Change < minSendAmount {
+		return nil, "", fmt.Errorf(
+			"payment: change %d is below the minimum output %d",
+			p.Change, minSendAmount,
+		)
+	}
 
 	outputs := []txBodyOutput{
 		{Address: p.ToAddr, Amount: p.SendAmount},

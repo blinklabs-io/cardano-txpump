@@ -25,6 +25,9 @@ import (
 	ouroboros "github.com/blinklabs-io/gouroboros"
 	"github.com/blinklabs-io/gouroboros/ledger"
 	"github.com/blinklabs-io/gouroboros/ledger/common"
+	"github.com/blinklabs-io/gouroboros/protocol/localstatequery"
+	"github.com/blinklabs-io/gouroboros/protocol/localtxmonitor"
+	"github.com/blinklabs-io/gouroboros/protocol/localtxsubmission"
 )
 
 // dialTimeout is the maximum time to wait for a connection to the node.
@@ -49,8 +52,20 @@ func NewNodeClient(
 	magic uint32,
 	logger *slog.Logger,
 ) (*NodeClient, error) {
+	return newNodeClient(addr, magic, logger, dialTimeout)
+}
+
+func newNodeClient(
+	addr string,
+	magic uint32,
+	logger *slog.Logger,
+	timeout time.Duration,
+) (*NodeClient, error) {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if timeout <= 0 {
+		timeout = dialTimeout
 	}
 
 	proto := protoFromAddr(addr)
@@ -59,12 +74,15 @@ func NewNodeClient(
 		ouroboros.WithNetworkMagic(magic),
 		ouroboros.WithNodeToNode(false), // N2C
 		ouroboros.WithLogger(logger),
+		ouroboros.WithLocalTxSubmissionConfig(localtxsubmission.NewConfig()),
+		ouroboros.WithLocalStateQueryConfig(localstatequery.NewConfig()),
+		ouroboros.WithLocalTxMonitorConfig(localtxmonitor.NewConfig()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("ouroboros.New: %w", err)
 	}
 
-	if err := conn.DialTimeout(proto, addr, dialTimeout); err != nil {
+	if err := conn.DialTimeout(proto, addr, timeout); err != nil {
 		conn.Close() //nolint:errcheck
 		return nil, fmt.Errorf("dial %s %s: %w", proto, addr, err)
 	}

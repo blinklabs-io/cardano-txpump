@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/blinklabs-io/gouroboros/cbor"
 	"github.com/blinklabs-io/gouroboros/ledger/common"
@@ -26,7 +27,7 @@ import (
 // alwaysSucceedsScriptHex is a PlutusV3 script, as carried in a witness set
 // (a CBOR byte string wrapping the flat program), for
 // (program 1.1.0 (lam ctx (con unit ()))): it accepts any script context.
-const alwaysSucceedsScriptHex = "450101002499"
+const alwaysSucceedsScriptHex = "0101002499"
 
 // plutusV3 is the Plutus language version index used by protocol parameter
 // cost models and language views.
@@ -116,6 +117,9 @@ func plutusInputs(label string, utxos []UTxO) (cbor.Set, uint64, error) {
 			)
 		}
 		set = append(set, txBodyInput{Hash: hashBytes, Idx: u.Index})
+		if u.Amount > math.MaxUint64-total {
+			return nil, 0, fmt.Errorf("%s: total input amount overflow", label)
+		}
 		total += u.Amount
 	}
 	return set, total, nil
@@ -170,7 +174,11 @@ func BuildPlutusLockTx(
 	if err != nil {
 		return nil, err
 	}
-	if total < amount+fee {
+	if fee > math.MaxUint64-amount {
+		return nil, errors.New("plutus_lock: amount plus fee overflows")
+	}
+	required := amount + fee
+	if total < required {
 		return nil, fmt.Errorf(
 			"plutus_lock: total input %d cannot cover amount %d + fee %d",
 			total, amount, fee,

@@ -21,6 +21,7 @@ import (
 
 	"github.com/blinklabs-io/gouroboros/cbor"
 	"github.com/blinklabs-io/gouroboros/ledger"
+	"github.com/blinklabs-io/gouroboros/ledger/conway"
 	"github.com/blinklabs-io/gouroboros/ledger/dijkstra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -136,6 +137,10 @@ func TestBuildPayment_NoChange(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, txBytes)
 	requireConwayDecode(t, txBytes)
+	var tx conway.ConwayTransaction
+	_, err = cbor.Decode(txBytes, &tx)
+	require.NoError(t, err)
+	require.Len(t, tx.Produced(), 1)
 }
 
 func TestBuildPayment_IsDeterministic(t *testing.T) {

@@ -15,6 +15,7 @@
 package txpump
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -28,12 +29,13 @@ import (
 
 // Pump orchestrates the main transaction-generation loop.
 type Pump struct {
-	cfg          *Config
-	wallet       *Wallet
-	logger       *slog.Logger
-	txlog        *TxLogger
-	genesisTime  time.Time
-	plutusLocked []UTxO
+	cfg                  *Config
+	wallet               *Wallet
+	logger               *slog.Logger
+	txlog                *TxLogger
+	genesisTime          time.Time
+	plutusLocked         []UTxO
+	pendingPlutusUnlocks map[string]pendingPlutusUnlock
 	// Credentials (hex key hashes) txpump has registered as stake keys and
 	// DReps, mapped to when the registration is expected on chain, so later
 	// certificates skip the registration deposit.
@@ -46,6 +48,11 @@ type Pump struct {
 	intRangeFn    func(int, int) int
 }
 
+type pendingPlutusUnlock struct {
+	locked       UTxO
+	absentRounds int
+}
+
 // NewPump creates a new Pump from the provided Config.
 func NewPump(
 	cfg *Config,
@@ -55,11 +62,12 @@ func NewPump(
 	genesisTime time.Time,
 ) *Pump {
 	return &Pump{
-		cfg:         cfg,
-		wallet:      wallet,
-		logger:      logger,
-		txlog:       txlog,
-		genesisTime: genesisTime,
+		cfg:                  cfg,
+		wallet:               wallet,
+		logger:               logger,
+		txlog:                txlog,
+		genesisTime:          genesisTime,
+		pendingPlutusUnlocks: make(map[string]pendingPlutusUnlock),
 
 		stakeRegistered: make(map[string]time.Time),
 		drepRegistered:  make(map[string]time.Time),
@@ -76,7 +84,9 @@ func NewPump(
 func (p *Pump) Run(ctx context.Context) error {
 	var startupTimer *time.Timer
 	var startup <-chan time.Time
+	var startupDeadline time.Time
 	if p.cfg.StartupTimeout > 0 {
+		startupDeadline = time.Now().Add(p.cfg.StartupTimeout)
 		startupTimer = time.NewTimer(p.cfg.StartupTimeout)
 		defer startupTimer.Stop()
 		startup = startupTimer.C
@@ -94,24 +104,32 @@ func (p *Pump) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-startup:
-			return fmt.Errorf(
-				"txpump readiness timeout after %s: no transaction was successfully submitted",
-				p.cfg.StartupTimeout,
-			)
+			return p.readinessTimeoutError()
 		default:
 		}
 
 		batchSize := IntRange(p.cfg.TxCountMin, p.cfg.TxCountMax)
 
 		onFallback := false
-		client, err := p.dialPrimary()
+		dialLimit := startupDialTimeout(ready, startupDeadline)
+		if dialLimit <= 0 {
+			return p.readinessTimeoutError()
+		}
+		client, err := p.dialPrimary(dialLimit)
 		if err != nil {
+			if !ready && startupExpired(startup, startupDeadline) {
+				return p.readinessTimeoutError()
+			}
 			p.logger.Error(
 				"failed to connect to primary node, trying fallback",
 				"primary", p.cfg.NodeAddr,
 				"err", err,
 			)
-			client, err = p.dialFallback()
+			dialLimit = startupDialTimeout(ready, startupDeadline)
+			if dialLimit <= 0 {
+				return p.readinessTimeoutError()
+			}
+			client, err = p.dialFallback(dialLimit)
 			if err != nil {
 				p.logger.Error(
 					"fallback connection also failed, skipping batch",
@@ -125,9 +143,27 @@ func (p *Pump) Run(ctx context.Context) error {
 			}
 			onFallback = true
 		}
+		if !ready && startupExpired(startup, startupDeadline) {
+			client.Close() //nolint:errcheck // best-effort close
+			return p.readinessTimeoutError()
+		}
+		var stopStartupAbort func()
+		if !ready && !startupDeadline.IsZero() {
+			delay := time.Until(startupDeadline)
+			if delay <= 0 {
+				client.Close() //nolint:errcheck // best-effort close
+				return p.readinessTimeoutError()
+			}
+			abort := time.AfterFunc(delay, func() {
+				_ = client.Close()
+			})
+			stopStartupAbort = func() { abort.Stop() }
+		}
 
 		ids := p.wallet.PendingIDs()
 		addresses := p.wallet.SigningAddresses()
+		scriptAddress := scriptAddressFromHash(alwaysSucceedsScriptHash())
+		addresses = append(addresses, scriptAddress)
 		if len(addresses) > 0 {
 			// The fallback is a cardano-node, where the mempool cannot be
 			// queried (see ReconcileWallet), so pending reservations are kept
@@ -143,17 +179,39 @@ func (p *Pump) Run(ctx context.Context) error {
 					"err",
 					reconcileErr,
 				)
+				if stopStartupAbort != nil {
+					stopStartupAbort()
+				}
 				client.Close() //nolint:errcheck // best-effort close
+				if !ready && startupExpired(startup, startupDeadline) {
+					return p.readinessTimeoutError()
+				}
 				if !p.cooldown(ctx) {
 					return ctx.Err()
 				}
 				continue
 			}
-			p.wallet.ReconcileSnapshot(snapshot, presence)
+			walletSnapshot := make([]UTxO, 0, len(snapshot))
+			plutusSnapshot := make([]UTxO, 0, len(snapshot))
+			for _, utxo := range snapshot {
+				if bytes.Equal(utxo.address, scriptAddress) {
+					plutusSnapshot = append(plutusSnapshot, utxo)
+				} else {
+					walletSnapshot = append(walletSnapshot, utxo)
+				}
+			}
+			p.wallet.ReconcileSnapshot(walletSnapshot, presence)
+			p.reconcilePlutusSnapshot(plutusSnapshot, presence)
 		}
 		submitted := p.runBatch(ctx, client, batchSize)
+		if stopStartupAbort != nil {
+			stopStartupAbort()
+		}
 		client.Close() //nolint:errcheck // best-effort close
 		if submitted > 0 && !ready {
+			if startupExpired(startup, startupDeadline) {
+				return p.readinessTimeoutError()
+			}
 			ready = true
 			stopStartupTimeout(&startupTimer, &startup)
 			p.logger.Info(
@@ -181,6 +239,90 @@ func (p *Pump) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+func (p *Pump) readinessTimeoutError() error {
+	return fmt.Errorf(
+		"txpump readiness timeout after %s: no transaction was successfully submitted",
+		p.cfg.StartupTimeout,
+	)
+}
+
+func startupExpired(startup <-chan time.Time, deadline time.Time) bool {
+	select {
+	case <-startup:
+		return true
+	default:
+	}
+	return !deadline.IsZero() && !time.Now().Before(deadline)
+}
+
+func startupDialTimeout(ready bool, deadline time.Time) time.Duration {
+	if ready || deadline.IsZero() {
+		return dialTimeout
+	}
+	remaining := time.Until(deadline)
+	if remaining < dialTimeout {
+		return remaining
+	}
+	return dialTimeout
+}
+
+func (p *Pump) reconcilePlutusSnapshot(snapshot []UTxO, presence map[string]bool) {
+	if p.pendingPlutusUnlocks == nil {
+		p.pendingPlutusUnlocks = make(map[string]pendingPlutusUnlock)
+	}
+	onChain := make(map[string]UTxO, len(snapshot))
+	for _, utxo := range snapshot {
+		onChain[utxoKey(utxo)] = utxo
+	}
+
+	known := make(map[string]struct{}, len(p.plutusLocked))
+	nextLocked := make([]UTxO, 0, len(p.plutusLocked)+len(snapshot))
+	for _, locked := range p.plutusLocked {
+		key := utxoKey(locked)
+		if _, exists := onChain[key]; exists || presence[locked.TxHash] {
+			nextLocked = append(nextLocked, locked)
+			known[key] = struct{}{}
+		}
+	}
+
+	pendingInputs := make(map[string]struct{}, len(p.pendingPlutusUnlocks))
+	for txID, pending := range p.pendingPlutusUnlocks {
+		key := utxoKey(pending.locked)
+		if presence[txID] {
+			pending.absentRounds = 0
+			p.pendingPlutusUnlocks[txID] = pending
+			pendingInputs[key] = struct{}{}
+			continue
+		}
+		if _, stillLocked := onChain[key]; stillLocked {
+			pending.absentRounds++
+			if pending.absentRounds < 2 {
+				p.pendingPlutusUnlocks[txID] = pending
+				pendingInputs[key] = struct{}{}
+				continue
+			}
+			if _, exists := known[key]; !exists {
+				nextLocked = append(nextLocked, pending.locked)
+				known[key] = struct{}{}
+			}
+		}
+		delete(p.pendingPlutusUnlocks, txID)
+	}
+
+	for _, utxo := range snapshot {
+		key := utxoKey(utxo)
+		if _, exists := known[key]; exists {
+			continue
+		}
+		if _, unlocking := pendingInputs[key]; unlocking {
+			continue
+		}
+		nextLocked = append(nextLocked, utxo)
+		known[key] = struct{}{}
+	}
+	p.plutusLocked = nextLocked
 }
 
 // waitForGenesis blocks transaction generation until the configured network
@@ -221,20 +363,20 @@ func stopStartupTimeout(timer **time.Timer, deadline *<-chan time.Time) {
 }
 
 // dialPrimary connects to the primary node address.
-func (p *Pump) dialPrimary() (*NodeClient, error) {
+func (p *Pump) dialPrimary(timeout time.Duration) (*NodeClient, error) {
 	if p.dialPrimaryFn != nil {
 		return p.dialPrimaryFn()
 	}
-	return NewNodeClient(p.cfg.NodeAddr, p.cfg.NetworkMagic, p.logger)
+	return newNodeClient(p.cfg.NodeAddr, p.cfg.NetworkMagic, p.logger, timeout)
 }
 
 // dialFallback connects to the fallback node address. Returns an error if no
 // fallback is configured.
-func (p *Pump) dialFallback() (*NodeClient, error) {
+func (p *Pump) dialFallback(timeout time.Duration) (*NodeClient, error) {
 	if p.cfg.FallbackAddr == "" {
 		return nil, errors.New("no fallback node address configured")
 	}
-	return NewNodeClient(p.cfg.FallbackAddr, p.cfg.NetworkMagic, p.logger)
+	return newNodeClient(p.cfg.FallbackAddr, p.cfg.NetworkMagic, p.logger, timeout)
 }
 
 // epochFromSlot returns the epoch number for a given slot.
@@ -291,7 +433,11 @@ func (p *Pump) currentSlot() uint64 {
 	if elapsed <= 0 {
 		return 0
 	}
-	return uint64(elapsed.Seconds())
+	slotLength := p.cfg.SlotLength
+	if slotLength <= 0 {
+		slotLength = time.Second
+	}
+	return uint64(elapsed / slotLength)
 }
 
 // runBatch submits batchSize transactions, selecting a random type for each.
@@ -448,6 +594,7 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 	if submitErr != nil {
 		entry.Status = "rejected"
 		entry.ErrorMsg = submitErr.Error()
+		p.wallet.ReturnUTxOs(inputs)
 		p.logger.Warn(
 			"tx rejected",
 			"tx_id", txID,
@@ -546,15 +693,13 @@ func (p *Pump) submitCertTx(
 	build func(inputs []UTxO, deposit, fee uint64, changeAddr []byte) ([]byte, error),
 ) bool {
 	fee := jitteredFee(MinFee)
-	// Reserve enough for a registration deposit so the credential is known
-	// before deciding whether to pay it; change always stays above min-UTxO.
-	required := fee + registrationDeposit + minSendAmount
-	inputs, _, err := p.wallet.SelectCoins(required)
+	baseRequired := fee + minSendAmount
+	inputs, change, err := p.wallet.SelectCoins(baseRequired)
 	if err != nil {
 		p.logger.Warn(
 			"coin selection failed",
 			"tx_type", txType,
-			"required_lovelace", required,
+			"required_lovelace", baseRequired,
 			"err", err,
 		)
 		return false
@@ -569,6 +714,21 @@ func (p *Pump) submitCertTx(
 	var deposit uint64
 	if !isRegistered {
 		deposit = registrationDeposit
+		if change < deposit {
+			missingDeposit := deposit - change
+			extraInputs, _, selectErr := p.wallet.SelectCoins(missingDeposit)
+			if selectErr != nil {
+				p.wallet.ReturnUTxOs(inputs)
+				p.logger.Warn(
+					"coin selection failed for registration deposit",
+					"tx_type", txType,
+					"required_lovelace", missingDeposit,
+					"err", selectErr,
+				)
+				return false
+			}
+			inputs = append(inputs, extraInputs...)
+		}
 	}
 	changeAddr := controlledChangeAddr(inputs)
 
@@ -739,6 +899,10 @@ func (p *Pump) submitPlutusUnlock(client *NodeClient, batchSize int, locked UTxO
 		TxHash: txID, Index: 0, Amount: locked.Amount - fee,
 		SigningKey: changeKey,
 	}}
+	if p.pendingPlutusUnlocks == nil {
+		p.pendingPlutusUnlocks = make(map[string]pendingPlutusUnlock)
+	}
+	p.pendingPlutusUnlocks[txID] = pendingPlutusUnlock{locked: locked}
 	p.wallet.RecordAccepted(txID, collateral, outputs, p.cfg.confirmationDelay())
 	return true
 }

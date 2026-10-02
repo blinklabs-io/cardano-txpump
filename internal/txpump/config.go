@@ -89,8 +89,8 @@ type Config struct {
 	// accepts either a directory of JSON files or a single JSON file.
 	GenesisUTxOFile string
 
-	// GenesisFile is the path to the testnet.yaml genesis configuration.
-	// When set, EpochLength and NetworkMagic are read from the genesis.
+	// GenesisFile is the path to a generated Shelley genesis JSON file or the
+	// testnet.yaml specification. When set, network parameters are read from it.
 	GenesisFile string
 
 	// DelegationPoolKeyHash is the optional hex-encoded 28-byte pool key hash

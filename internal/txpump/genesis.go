@@ -15,6 +15,7 @@
 package txpump
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -33,17 +34,13 @@ type GenesisUTxO struct {
 	Amount uint64 `json:"amount"`
 }
 
-type shelleyGenesisFile struct {
-	InitialFunds map[string]uint64 `json:"initialFunds"`
-}
-
 // LoadGenesisUTxOs reads pre-funded UTxOs from a JSON file or directory
 // produced by the testnet-generation-tool configurator.
 //
-// If path is a directory, all .json files in it are read (non-JSON files such
-// as key files are skipped). If path is a file, it is read directly. The
-// expected JSON format is either an array of objects with txHash, index, and
-// amount fields or a Shelley genesis file containing initialFunds.
+// If path is a directory, supported UTxO JSON files are read and unrelated
+// JSON files are skipped. If path is a file, it is read directly. Supported
+// formats are an array of objects with txHash, index, and amount fields or a
+// Shelley genesis file containing initialFunds.
 func LoadGenesisUTxOs(path string) ([]UTxO, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -67,9 +64,15 @@ func LoadGenesisUTxOs(path string) ([]UTxO, error) {
 
 	var utxos []UTxO
 	for _, f := range files {
-		loaded, loadErr := loadGenesisFile(f)
+		loaded, supported, loadErr := loadGenesisFile(f)
 		if loadErr != nil {
 			return nil, fmt.Errorf("load %s: %w", f, loadErr)
+		}
+		if !supported {
+			if !info.IsDir() {
+				return nil, fmt.Errorf("load %s: unsupported genesis UTxO JSON format", f)
+			}
+			continue
 		}
 		utxos = append(utxos, loaded...)
 	}
@@ -81,33 +84,50 @@ func LoadGenesisUTxOs(path string) ([]UTxO, error) {
 	return utxos, nil
 }
 
-func loadGenesisFile(path string) ([]UTxO, error) {
+func loadGenesisFile(path string) ([]UTxO, bool, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // trusted config path
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-
-	var raw []GenesisUTxO
-	rawErr := json.Unmarshal(data, &raw)
-	if rawErr == nil {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, false, fmt.Errorf("empty JSON file")
+	}
+	switch trimmed[0] {
+	case '[':
+		var raw []GenesisUTxO
+		if err := json.Unmarshal(trimmed, &raw); err != nil {
+			return nil, true, fmt.Errorf("unmarshal UTxO list: %w", err)
+		}
 		utxos := make([]UTxO, len(raw))
 		for i, r := range raw {
 			utxos[i] = UTxO{TxHash: r.TxHash, Index: r.Index, Amount: r.Amount}
 		}
-		return utxos, nil
+		return utxos, true, nil
+	case '{':
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &object); err != nil {
+			return nil, false, fmt.Errorf("unmarshal JSON object: %w", err)
+		}
+		fundsJSON, ok := object["initialFunds"]
+		if !ok {
+			return nil, false, nil
+		}
+		var initialFunds map[string]uint64
+		if err := json.Unmarshal(fundsJSON, &initialFunds); err != nil {
+			return nil, true, fmt.Errorf("unmarshal Shelley initialFunds: %w", err)
+		}
+		if len(initialFunds) == 0 {
+			return nil, true, nil
+		}
+		utxos, err := utxosFromShelleyInitialFunds(initialFunds)
+		return utxos, true, err
+	default:
+		if !json.Valid(trimmed) {
+			return nil, false, fmt.Errorf("invalid JSON")
+		}
+		return nil, false, nil
 	}
-
-	var shelley shelleyGenesisFile
-	if err := json.Unmarshal(data, &shelley); err != nil {
-		return nil, fmt.Errorf("unmarshal UTxO list: %w", rawErr)
-	}
-	if len(shelley.InitialFunds) == 0 {
-		return nil, fmt.Errorf(
-			"unmarshal UTxO list: %w; no Shelley initialFunds",
-			rawErr,
-		)
-	}
-	return utxosFromShelleyInitialFunds(shelley.InitialFunds)
 }
 
 func utxosFromShelleyInitialFunds(

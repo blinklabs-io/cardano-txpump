@@ -12,17 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package genesis parses the testnet.yaml 6-document YAML specification
-// produced by the testnet-generation-tool, exposing the network parameters
-// that txpump and analysis need at runtime.
+// Package genesis parses network parameters from testnet-generation-tool
+// specifications and generated Shelley genesis files.
 package genesis
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -49,7 +50,16 @@ type shelleyOverride struct {
 	SecurityParam    uint64  `yaml:"securityParam"`
 }
 
-// Config holds the parsed network parameters from testnet.yaml.
+type shelleyGenesis struct {
+	NetworkMagic     uint32    `json:"networkMagic"`
+	EpochLength      uint64    `json:"epochLength"`
+	SlotLength       float64   `json:"slotLength"`
+	ActiveSlotsCoeff float64   `json:"activeSlotsCoeff"`
+	SecurityParam    uint64    `json:"securityParam"`
+	SystemStart      time.Time `json:"systemStart"`
+}
+
+// Config holds parsed Cardano network parameters.
 type Config struct {
 	PoolCount        int
 	NetworkMagic     uint32
@@ -60,8 +70,8 @@ type Config struct {
 	SystemStartUnix  int64
 }
 
-// Load reads testnet.yaml from the given path and returns the parsed Config.
-// The file must contain at least 3 YAML documents separated by "---".
+// Load reads a generated Shelley genesis JSON file or testnet.yaml from the
+// given path and returns the parsed Config.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // trusted config path
 	if err != nil {
@@ -92,6 +102,30 @@ func countDocs(data []byte) (int, error) {
 
 // Parse parses the raw bytes of a testnet.yaml into a Config.
 func Parse(data []byte) (*Config, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		var shelley shelleyGenesis
+		if err := json.Unmarshal(trimmed, &shelley); err != nil {
+			return nil, fmt.Errorf("genesis.Parse: Shelley genesis JSON: %w", err)
+		}
+		if shelley.SystemStart.IsZero() {
+			return nil, errors.New("genesis.Parse: Shelley genesis systemStart is missing")
+		}
+		cfg := &Config{
+			PoolCount:        1,
+			NetworkMagic:     shelley.NetworkMagic,
+			EpochLength:      shelley.EpochLength,
+			SlotLength:       shelley.SlotLength,
+			ActiveSlotsCoeff: shelley.ActiveSlotsCoeff,
+			SecurityParam:    shelley.SecurityParam,
+			SystemStartUnix:  shelley.SystemStart.Unix(),
+		}
+		if err := validateConfig(cfg); err != nil {
+			return nil, err
+		}
+		return cfg, nil
+	}
+
 	// Validate that there are enough YAML documents before decoding.
 	// The file must contain at least 3 documents: testnet params, Byron
 	// overrides, and Shelley overrides.
@@ -146,19 +180,24 @@ func Parse(data []byte) (*Config, error) {
 		SystemStartUnix:  params.SystemStartUnix,
 	}
 
-	// Validate required fields.
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func validateConfig(cfg *Config) error {
 	if cfg.EpochLength == 0 {
-		return nil, errors.New("genesis.Parse: epochLength must be > 0")
+		return errors.New("genesis.Parse: epochLength must be > 0")
 	}
 	if cfg.SlotLength <= 0 {
-		return nil, errors.New("genesis.Parse: slotLength must be > 0")
+		return errors.New("genesis.Parse: slotLength must be > 0")
 	}
 	if cfg.ActiveSlotsCoeff <= 0 {
-		return nil, errors.New("genesis.Parse: activeSlotsCoeff must be > 0")
+		return errors.New("genesis.Parse: activeSlotsCoeff must be > 0")
 	}
 	if cfg.PoolCount <= 0 {
-		return nil, errors.New("genesis.Parse: poolCount must be > 0")
+		return errors.New("genesis.Parse: poolCount must be > 0")
 	}
-
-	return cfg, nil
+	return nil
 }

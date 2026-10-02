@@ -92,6 +92,63 @@ func TestLoadGenesisUTxOsShelleyInitialFunds(t *testing.T) {
 	}, got)
 }
 
+func TestLoadGenesisUTxOsDirectorySkipsUnrelatedJSON(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.json"),
+		[]byte(`{"networkId":"Testnet"}`),
+		0o600,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "utxos.json"),
+		[]byte(`[{"txHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","index":0,"amount":1000000}]`),
+		0o600,
+	))
+
+	got, err := LoadGenesisUTxOs(dir)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, uint64(1_000_000), got[0].Amount)
+}
+
+func TestLoadGenesisUTxOsErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		contents  string
+		wantError string
+	}{
+		{
+			name:      "empty supported list",
+			contents:  `[]`,
+			wantError: "no genesis UTxOs found",
+		},
+		{
+			name:      "malformed supported list",
+			contents:  `[{"txHash":`,
+			wantError: "unmarshal UTxO list",
+		},
+		{
+			name:      "invalid Shelley address",
+			contents:  `{"initialFunds":{"not-hex":1000000}}`,
+			wantError: "address",
+		},
+		{
+			name:      "unsupported single file",
+			contents:  `{"networkId":"Testnet"}`,
+			wantError: "unsupported genesis UTxO JSON format",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "input.json")
+			require.NoError(t, os.WriteFile(path, []byte(tc.contents), 0o600))
+			_, err := LoadGenesisUTxOs(path)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantError)
+		})
+	}
+}
+
 func genesisAddressTxHash(t *testing.T, address string) string {
 	t.Helper()
 	addrBytes, err := hex.DecodeString(address)

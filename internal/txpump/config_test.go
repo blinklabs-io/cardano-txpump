@@ -181,6 +181,7 @@ func clearTxpumpEnv(t *testing.T) {
 		"TXPUMP_FALLBACK_ADDR",
 		"TXPUMP_GENESIS_UTXO_FILE",
 		"TXPUMP_GENESIS_FILE",
+		"TXPUMP_CONWAY_GENESIS_FILE",
 		"TXPUMP_DELEGATION_POOL_KEY_HASH",
 	} {
 		t.Setenv(key, "")

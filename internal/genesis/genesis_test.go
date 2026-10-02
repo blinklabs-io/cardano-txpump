@@ -58,6 +58,21 @@ func TestParse(t *testing.T) {
 	assert.Equal(t, uint64(40), cfg.SecurityParam)
 }
 
+func TestParseShelleyGenesisJSON(t *testing.T) {
+	data := []byte(`{
+		"networkMagic": 42,
+		"epochLength": 500,
+		"slotLength": 1,
+		"activeSlotsCoeff": 0.4,
+		"securityParam": 40,
+		"systemStart": "2026-10-02T12:30:00Z"
+	}`)
+	cfg, err := Parse(data)
+	require.NoError(t, err)
+	assert.Equal(t, uint32(42), cfg.NetworkMagic)
+	assert.Equal(t, int64(1790944200), cfg.SystemStartUnix)
+}
+
 func TestParseFallbackByronK(t *testing.T) {
 	yaml := `# header
 --- # params

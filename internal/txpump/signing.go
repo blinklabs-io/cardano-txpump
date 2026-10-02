@@ -112,14 +112,14 @@ func parseAddrInfoFile(path string) ([]byte, error) {
 // It looks for genesis.1.skey, genesis.1.vkey, and genesis.1.addr.info.
 // Returns nil, nil if the skey file is absent (signing is optional).
 func LoadSigningKey(dir string) (*UTxOKey, error) {
-	key, err := loadSigningKeyPrefix(filepath.Join(dir, "genesis.1"))
-	if err != nil {
+	prefix := filepath.Join(dir, "genesis.1")
+	if _, err := os.Stat(prefix + ".skey"); err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil // signing not configured — not an error
+			return nil, nil // signing is not configured
 		}
-		return nil, err
+		return nil, fmt.Errorf("stat signing key: %w", err)
 	}
-	return key, nil
+	return loadSigningKeyPrefix(prefix)
 }
 
 // LoadSigningKeys reads all genesis UTxO keys from dir. It looks for files

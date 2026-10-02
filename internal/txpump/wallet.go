@@ -319,6 +319,9 @@ func (w *Wallet) SelectCoins(targetAmount uint64) ([]UTxO, uint64, error) {
 	var selected []UTxO
 	var collected uint64
 	for _, u := range sorted {
+		if u.Amount > math.MaxUint64-collected {
+			return nil, 0, errors.New("wallet: selected input total overflows uint64")
+		}
 		selected = append(selected, u)
 		collected += u.Amount
 		if collected >= targetAmount {

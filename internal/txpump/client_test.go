@@ -15,6 +15,7 @@
 package txpump
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -48,7 +49,7 @@ func TestNewNodeClient_InvalidTCPAddress(t *testing.T) {
 // TestNewNodeClient_UnixSocketMissing verifies that dialling a non-existent
 // Unix socket returns an error with the path in the message.
 func TestNewNodeClient_UnixSocketMissing(t *testing.T) {
-	path := "/tmp/txpump_test_nonexistent_socket_12345.sock"
+	path := filepath.Join(t.TempDir(), "missing.socket")
 	_, err := NewNodeClient(path, 42, nil)
 	require.Error(t, err, "dial to missing socket should fail")
 	require.Contains(

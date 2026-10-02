@@ -44,7 +44,7 @@ func sampleDelegInputs() []UTxO {
 	}
 }
 
-// testSigningKey returns a deterministic Ed25519 key controlling sampleAddr.
+// testSigningKey returns a deterministic Ed25519 key with sampleAddr as its change address.
 func testSigningKey(seedByte byte) *UTxOKey {
 	seed := bytes.Repeat([]byte{seedByte}, ed25519.SeedSize)
 	return &UTxOKey{
