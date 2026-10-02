@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/blinklabs-io/gouroboros/ledger/common"
 )
@@ -92,10 +93,23 @@ func loadGenesisFile(path string) ([]UTxO, bool, error) {
 	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
-		return nil, false, fmt.Errorf("empty JSON file")
+		if looksLikeGenesisJSON(path, trimmed) {
+			return nil, true, fmt.Errorf("empty JSON file")
+		}
+		return nil, false, nil
 	}
 	switch trimmed[0] {
 	case '[':
+		var records []json.RawMessage
+		if err := json.Unmarshal(trimmed, &records); err != nil {
+			if looksLikeGenesisJSON(path, trimmed) {
+				return nil, true, fmt.Errorf("unmarshal UTxO list: %w", err)
+			}
+			return nil, false, nil
+		}
+		if len(records) > 0 && !looksLikeUTxOList(records) {
+			return nil, false, nil
+		}
 		var raw []GenesisUTxO
 		if err := json.Unmarshal(trimmed, &raw); err != nil {
 			return nil, true, fmt.Errorf("unmarshal UTxO list: %w", err)
@@ -133,7 +147,10 @@ func loadGenesisFile(path string) ([]UTxO, bool, error) {
 	case '{':
 		var object map[string]json.RawMessage
 		if err := json.Unmarshal(trimmed, &object); err != nil {
-			return nil, false, fmt.Errorf("unmarshal JSON object: %w", err)
+			if looksLikeGenesisJSON(path, trimmed) {
+				return nil, true, fmt.Errorf("unmarshal JSON object: %w", err)
+			}
+			return nil, false, nil
 		}
 		fundsJSON, ok := object["initialFunds"]
 		if !ok {
@@ -150,10 +167,36 @@ func loadGenesisFile(path string) ([]UTxO, bool, error) {
 		return utxos, true, err
 	default:
 		if !json.Valid(trimmed) {
-			return nil, false, fmt.Errorf("invalid JSON")
+			if looksLikeGenesisJSON(path, trimmed) {
+				return nil, true, fmt.Errorf("invalid JSON")
+			}
+			return nil, false, nil
 		}
 		return nil, false, nil
 	}
+}
+
+func looksLikeUTxOList(records []json.RawMessage) bool {
+	for _, record := range records {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(record, &fields); err != nil {
+			continue
+		}
+		if _, ok := fields["txHash"]; ok {
+			return true
+		}
+		if _, ok := fields["index"]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeGenesisJSON(path string, data []byte) bool {
+	name := strings.ToLower(filepath.Base(path))
+	return strings.Contains(name, "genesis") || strings.Contains(name, "utxo") ||
+		bytes.Contains(data, []byte(`"initialFunds"`)) ||
+		bytes.Contains(data, []byte(`"txHash"`))
 }
 
 func utxosFromShelleyInitialFunds(

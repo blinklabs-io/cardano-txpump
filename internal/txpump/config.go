@@ -90,6 +90,8 @@ type Config struct {
 
 	// GenesisFile is the path to a generated Shelley genesis JSON file or the
 	// testnet.yaml specification. When set, network parameters are read from it.
+	// YAML specs must include a resolved systemStartUnix; use generated Shelley
+	// JSON when systemStart is relative, such as "now".
 	GenesisFile string
 
 	// DelegationPoolKeyHash is the optional hex-encoded 28-byte pool key hash
@@ -228,6 +230,12 @@ func LoadConfig() (*Config, error) {
 			return nil, errors.New(
 				"TXPUMP_GENESIS_FILE: genesis has epochLength=0, " +
 					"which is invalid",
+			)
+		}
+		if gcfg.SystemStartUnix == 0 {
+			return nil, errors.New(
+				"TXPUMP_GENESIS_FILE: systemStartUnix is unresolved; " +
+					"provide it in the testnet YAML or use generated Shelley genesis JSON",
 			)
 		}
 		cfg.EpochLength = gcfg.EpochLength
