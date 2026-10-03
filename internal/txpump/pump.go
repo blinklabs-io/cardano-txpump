@@ -1,0 +1,1061 @@
+// Copyright 2026 Blink Labs Software
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package txpump
+
+import (
+	"bytes"
+	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/blinklabs-io/gouroboros/cbor"
+	"github.com/blinklabs-io/gouroboros/ledger/common"
+)
+
+// Pump orchestrates the main transaction-generation loop.
+type Pump struct {
+	cfg                  *Config
+	wallet               *Wallet
+	logger               *slog.Logger
+	txlog                *TxLogger
+	genesisTime          time.Time
+	plutusLocked         []UTxO
+	pendingPlutusUnlocks map[string]pendingPlutusUnlock
+	// Credentials (hex key hashes) txpump has registered as stake keys and
+	// DReps, mapped to when the registration is expected on chain, so later
+	// certificates skip the registration deposit.
+	stakeRegistered map[string]time.Time
+	drepRegistered  map[string]time.Time
+	// Hooks keep Run orchestration tests independent of a live node.
+	dialPrimaryFn func() (*NodeClient, error)
+	runBatchFn    func(context.Context, *NodeClient, int) int
+	cooldownFn    func(context.Context) bool
+	intRangeFn    func(int, int) int
+}
+
+type pendingPlutusUnlock struct {
+	locked       UTxO
+	absentRounds int
+}
+
+// NewPump creates a new Pump from the provided Config.
+func NewPump(
+	cfg *Config,
+	wallet *Wallet,
+	logger *slog.Logger,
+	txlog *TxLogger,
+	genesisTime time.Time,
+) *Pump {
+	return &Pump{
+		cfg:                  cfg,
+		wallet:               wallet,
+		logger:               logger,
+		txlog:                txlog,
+		genesisTime:          genesisTime,
+		pendingPlutusUnlocks: make(map[string]pendingPlutusUnlock),
+
+		stakeRegistered: make(map[string]time.Time),
+		drepRegistered:  make(map[string]time.Time),
+	}
+}
+
+// Run executes the transaction-pump loop until ctx is cancelled.
+//
+// On each iteration it:
+//  1. Picks a random batch size in [TxCountMin, TxCountMax].
+//  2. Connects to the primary node (falling back to the secondary on failure).
+//  3. Submits the batch, one transaction at a time.
+//  4. Waits a random cooldown in [CooldownMin, CooldownMax] milliseconds.
+func (p *Pump) Run(ctx context.Context) error {
+	var startupTimer *time.Timer
+	var startup <-chan time.Time
+	var startupDeadline time.Time
+	if p.cfg.StartupTimeout > 0 {
+		startupDeadline = time.Now().Add(p.cfg.StartupTimeout)
+		startupTimer = time.NewTimer(p.cfg.StartupTimeout)
+		defer func() {
+			if startupTimer != nil {
+				startupTimer.Stop()
+			}
+		}()
+		startup = startupTimer.C
+	}
+	ready := false
+	// A healthy node can accept an N2C connection before the network's
+	// configured system start. Keep the first submission behind the genesis
+	// boundary so an accepted pre-genesis transaction is not later discarded
+	// when forging and ledger revalidation begin.
+	if err := p.waitForGenesis(ctx, startup); err != nil {
+		return err
+	}
+	if !p.hasEnabledTypes() {
+		stopStartupTimeout(&startupTimer, &startup)
+		startupDeadline = time.Time{}
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-startup:
+			return p.readinessTimeoutError()
+		default:
+		}
+		if !ready && p.cfg.StartupTimeout > 0 && startupDeadline.IsZero() &&
+			p.hasEnabledTypes() {
+			startupTimer = time.NewTimer(p.cfg.StartupTimeout)
+			startup = startupTimer.C
+			startupDeadline = time.Now().Add(p.cfg.StartupTimeout)
+		}
+
+		batchSize := IntRange(p.cfg.TxCountMin, p.cfg.TxCountMax)
+
+		onFallback := false
+		dialLimit := startupDialTimeout(ready, startupDeadline)
+		if dialLimit <= 0 {
+			return p.readinessTimeoutError()
+		}
+		client, err := p.dialPrimary(dialLimit)
+		if err != nil {
+			if !ready && startupExpired(startup, startupDeadline) {
+				return p.readinessTimeoutError()
+			}
+			p.logger.Error(
+				"failed to connect to primary node, trying fallback",
+				"primary", p.cfg.NodeAddr,
+				"err", err,
+			)
+			dialLimit = startupDialTimeout(ready, startupDeadline)
+			if dialLimit <= 0 {
+				return p.readinessTimeoutError()
+			}
+			client, err = p.dialFallback(dialLimit)
+			if err != nil {
+				p.logger.Error(
+					"fallback connection also failed, skipping batch",
+					"fallback", p.cfg.FallbackAddr,
+					"err", err,
+				)
+				if !p.cooldown(ctx) {
+					return ctx.Err()
+				}
+				continue
+			}
+			onFallback = true
+		}
+		if !ready && startupExpired(startup, startupDeadline) {
+			client.Close() //nolint:errcheck // best-effort close
+			return p.readinessTimeoutError()
+		}
+		var stopStartupAbort func()
+		if !ready && !startupDeadline.IsZero() {
+			delay := time.Until(startupDeadline)
+			if delay <= 0 {
+				client.Close() //nolint:errcheck // best-effort close
+				return p.readinessTimeoutError()
+			}
+			abort := time.AfterFunc(delay, func() {
+				_ = client.Close()
+			})
+			stopStartupAbort = func() { abort.Stop() }
+		}
+
+		ids := p.wallet.PendingIDs()
+		addresses := p.wallet.SigningAddresses()
+		scriptAddress := scriptAddressFromHash(alwaysSucceedsScriptHash())
+		if len(addresses) > 0 {
+			addresses = append(addresses, scriptAddress)
+			// The fallback is a cardano-node, where the mempool cannot be
+			// queried (see ReconcileWallet), so pending reservations are kept
+			// until a batch on the primary observes them.
+			snapshot, presence, reconcileErr := client.ReconcileWallet(
+				addresses,
+				ids,
+				!onFallback,
+			)
+			if reconcileErr != nil {
+				p.logger.Warn(
+					"wallet reconciliation failed; retaining wallet state",
+					"err",
+					reconcileErr,
+				)
+				if stopStartupAbort != nil {
+					stopStartupAbort()
+				}
+				client.Close() //nolint:errcheck // best-effort close
+				if !ready && startupExpired(startup, startupDeadline) {
+					return p.readinessTimeoutError()
+				}
+				if !p.cooldown(ctx) {
+					return ctx.Err()
+				}
+				continue
+			}
+			walletSnapshot := make([]UTxO, 0, len(snapshot))
+			plutusSnapshot := make([]UTxO, 0, len(snapshot))
+			for _, utxo := range snapshot {
+				if bytes.Equal(utxo.Address, scriptAddress) {
+					plutusSnapshot = append(plutusSnapshot, utxo)
+				} else {
+					walletSnapshot = append(walletSnapshot, utxo)
+				}
+			}
+			p.wallet.ReconcileSnapshot(walletSnapshot, presence)
+			p.reconcilePlutusSnapshot(plutusSnapshot, presence)
+		}
+		submitted := p.runBatch(ctx, client, batchSize)
+		if stopStartupAbort != nil {
+			stopStartupAbort()
+		}
+		client.Close() //nolint:errcheck // best-effort close
+		if submitted > 0 && !ready {
+			if startupExpired(startup, startupDeadline) {
+				return p.readinessTimeoutError()
+			}
+			ready = true
+			stopStartupTimeout(&startupTimer, &startup)
+			p.logger.Info(
+				"txpump ready",
+				"workload_types", p.cfg.Types,
+				"submitted", submitted,
+			)
+			if p.txlog != nil {
+				if logErr := p.txlog.Log(TxLog{
+					Event:         "ready",
+					Status:        "ready",
+					NodeAddr:      client.Addr(),
+					WorkloadTypes: append([]string(nil), p.cfg.Types...),
+				}); logErr != nil {
+					p.logger.Error(
+						"txlog readiness write failed",
+						"err",
+						logErr,
+					)
+				}
+			}
+		}
+
+		if !p.cooldown(ctx) {
+			return ctx.Err()
+		}
+	}
+}
+
+func (p *Pump) readinessTimeoutError() error {
+	return fmt.Errorf(
+		"txpump readiness timeout after %s: no transaction was successfully submitted",
+		p.cfg.StartupTimeout,
+	)
+}
+
+func startupExpired(startup <-chan time.Time, deadline time.Time) bool {
+	select {
+	case <-startup:
+		return true
+	default:
+	}
+	return !deadline.IsZero() && !time.Now().Before(deadline)
+}
+
+func startupDialTimeout(ready bool, deadline time.Time) time.Duration {
+	if ready || deadline.IsZero() {
+		return dialTimeout
+	}
+	remaining := time.Until(deadline)
+	if remaining < dialTimeout {
+		return remaining
+	}
+	return dialTimeout
+}
+
+func (p *Pump) reconcilePlutusSnapshot(snapshot []UTxO, presence map[string]bool) {
+	if p.pendingPlutusUnlocks == nil {
+		p.pendingPlutusUnlocks = make(map[string]pendingPlutusUnlock)
+	}
+	onChain := make(map[string]UTxO, len(snapshot))
+	for _, utxo := range snapshot {
+		onChain[utxoKey(utxo)] = utxo
+	}
+
+	known := make(map[string]struct{}, len(p.plutusLocked))
+	nextLocked := make([]UTxO, 0, len(p.plutusLocked)+len(snapshot))
+	for _, locked := range p.plutusLocked {
+		key := utxoKey(locked)
+		if _, exists := onChain[key]; exists || presence[locked.TxHash] {
+			nextLocked = append(nextLocked, locked)
+			known[key] = struct{}{}
+		}
+	}
+
+	pendingInputs := make(map[string]struct{}, len(p.pendingPlutusUnlocks))
+	for txID, pending := range p.pendingPlutusUnlocks {
+		key := utxoKey(pending.locked)
+		if presence[txID] {
+			pending.absentRounds = 0
+			p.pendingPlutusUnlocks[txID] = pending
+			pendingInputs[key] = struct{}{}
+			continue
+		}
+		if _, stillLocked := onChain[key]; stillLocked {
+			pending.absentRounds++
+			if pending.absentRounds < 2 {
+				p.pendingPlutusUnlocks[txID] = pending
+				pendingInputs[key] = struct{}{}
+				continue
+			}
+			if _, exists := known[key]; !exists {
+				nextLocked = append(nextLocked, pending.locked)
+				known[key] = struct{}{}
+			}
+		}
+		delete(p.pendingPlutusUnlocks, txID)
+	}
+
+	for _, utxo := range snapshot {
+		key := utxoKey(utxo)
+		if _, exists := known[key]; exists {
+			continue
+		}
+		if _, unlocking := pendingInputs[key]; unlocking {
+			continue
+		}
+		nextLocked = append(nextLocked, utxo)
+		known[key] = struct{}{}
+	}
+	p.plutusLocked = nextLocked
+}
+
+// waitForGenesis blocks transaction generation until the configured network
+// start. The startup deadline remains active while waiting, so a bad runtime
+// genesis timestamp fails readiness instead of leaving txpump hung forever.
+func (p *Pump) waitForGenesis(
+	ctx context.Context,
+	startup <-chan time.Time,
+) error {
+	delay := time.Until(p.genesisTime)
+	if delay <= 0 {
+		return nil
+	}
+	p.logger.Info("waiting for genesis start", "delay", delay)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-startup:
+		return fmt.Errorf(
+			"txpump readiness timeout after %s: genesis has not started",
+			p.cfg.StartupTimeout,
+		)
+	case <-timer.C:
+		return nil
+	}
+}
+
+// stopStartupTimeout disables the readiness deadline after the first
+// successful submission. The deadline only protects the pre-ready phase.
+func stopStartupTimeout(timer **time.Timer, deadline *<-chan time.Time) {
+	if *timer != nil {
+		(*timer).Stop()
+		*timer = nil
+	}
+	*deadline = nil
+}
+
+func (p *Pump) hasEnabledTypes() bool {
+	return len(enabledTypes(
+		p.cfg.Types,
+		p.epochFromSlot(p.currentSlot()),
+		p.cfg.delegationEnabled(),
+	)) > 0
+}
+
+// dialPrimary connects to the primary node address.
+func (p *Pump) dialPrimary(timeout time.Duration) (*NodeClient, error) {
+	if p.dialPrimaryFn != nil {
+		return p.dialPrimaryFn()
+	}
+	return newNodeClient(p.cfg.NodeAddr, p.cfg.NetworkMagic, p.logger, timeout)
+}
+
+// dialFallback connects to the fallback node address. Returns an error if no
+// fallback is configured.
+func (p *Pump) dialFallback(timeout time.Duration) (*NodeClient, error) {
+	if p.cfg.FallbackAddr == "" {
+		return nil, errors.New("no fallback node address configured")
+	}
+	return newNodeClient(p.cfg.FallbackAddr, p.cfg.NetworkMagic, p.logger, timeout)
+}
+
+// epochFromSlot returns the epoch number for a given slot.
+func (p *Pump) epochFromSlot(slot uint64) uint64 {
+	el := p.cfg.EpochLength
+	if el == 0 {
+		el = 500
+	}
+	return slot / el
+}
+
+// enabledTypes returns the subset of types that are permitted at the given
+// epoch.  Types are gated to avoid submitting transactions that the node
+// cannot process until the relevant era/rules are active.
+//
+//   - payment:    always enabled
+//   - delegation: enabled from epoch 1 when delegation credentials are configured
+//   - governance: enabled from epoch 2
+//   - plutus:     enabled from epoch 3
+func enabledTypes(
+	types []string,
+	epoch uint64,
+	delegationEnabled bool,
+) []string {
+	var enabled []string
+	for _, t := range types {
+		switch t {
+		case "payment":
+			enabled = append(enabled, t)
+		case "delegation":
+			if epoch >= 1 && delegationEnabled {
+				enabled = append(enabled, t)
+			}
+		case "governance":
+			if epoch >= 2 {
+				enabled = append(enabled, t)
+			}
+		case "plutus":
+			if epoch >= 3 {
+				enabled = append(enabled, t)
+			}
+		}
+	}
+	return enabled
+}
+
+// currentSlot returns the number of 1-second slots elapsed since genesis.
+// Using elapsed time (rather than Unix epoch seconds) ensures that the slot
+// counter starts near 0 and epoch gating works correctly for devnet testing,
+// where epochs are only 500 slots long. Before genesis, report slot 0 rather
+// than converting a negative duration to a near-MaxUint64 slot.
+func (p *Pump) currentSlot() uint64 {
+	elapsed := time.Since(p.genesisTime)
+	if elapsed <= 0 {
+		return 0
+	}
+	slotLength := p.cfg.SlotLength
+	if slotLength <= 0 {
+		slotLength = time.Second
+	}
+	return uint64(elapsed / slotLength)
+}
+
+// runBatch submits batchSize transactions, selecting a random type for each.
+func (p *Pump) runBatch(
+	ctx context.Context,
+	client *NodeClient,
+	batchSize int,
+) int {
+	if p.runBatchFn != nil {
+		return p.runBatchFn(ctx, client, batchSize)
+	}
+	slot := p.currentSlot()
+	epoch := p.epochFromSlot(slot)
+	active := enabledTypes(p.cfg.Types, epoch, p.cfg.delegationEnabled())
+	if len(active) == 0 {
+		return 0
+	}
+
+	submitted := 0
+	for i := 0; i < batchSize; i++ {
+		select {
+		case <-ctx.Done():
+			return submitted
+		default:
+		}
+
+		txType := active[IntRange(0, len(active)-1)]
+		switch txType {
+		case "payment":
+			if p.submitPayment(client, batchSize) {
+				submitted++
+			}
+		case "delegation":
+			if p.submitDelegation(client, batchSize) {
+				submitted++
+			}
+		case "governance":
+			if p.submitGovernance(client, batchSize) {
+				submitted++
+			}
+		case "plutus":
+			if p.submitPlutus(client, batchSize) {
+				submitted++
+			}
+		default:
+			p.logger.Warn(
+				"unknown tx type in config, skipping",
+				"type", txType,
+			)
+		}
+	}
+	return submitted
+}
+
+// submitPayment builds and submits a single payment transaction.
+func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
+	// Determine a send amount between minSendAmount and half the wallet balance
+	// (leaving room for fees and change).  Fall back to minSendAmount when the
+	// balance is very small.
+	balance := p.wallet.Balance()
+	maxSend := balance / 2
+	if maxSend < minSendAmount+MinFee {
+		p.logger.Debug(
+			"wallet balance too low for payment, skipping",
+			"balance_lovelace", balance,
+		)
+		return false
+	}
+
+	upper := maxSend - MinFee
+	if upper < minSendAmount {
+		upper = minSendAmount
+	}
+	// IntRange returns a value in [minSendAmount, upper], both of which are
+	// positive here, so the result is always non-negative.
+	//nolint:gosec
+	sendAmount := uint64(IntRange(int(minSendAmount), int(upper)))
+
+	// With little spendable balance the send amount is pinned (to
+	// minSendAmount, or to the whole input once dust change is folded in), so
+	// a payment rebuilt from the same inputs after a rollback would repeat the
+	// earlier transaction ID unless the fee varies; see jitteredFee.
+	fee := jitteredFee(MinFee)
+	required := sendAmount + fee
+	inputs, change, err := p.wallet.SelectCoins(required)
+	if err != nil {
+		p.logger.Warn(
+			"coin selection failed",
+			"required_lovelace", required,
+			"err", err,
+		)
+		return false
+	}
+	// Change below the minimum output would make the node reject the whole
+	// transaction, so send it to the recipient instead.
+	if change > 0 && change < minSendAmount {
+		sendAmount += change
+		change = 0
+	}
+
+	// Collect a witness key for every distinct signing key among the inputs.
+	// SelectCoins may return UTxOs from different genesis keys; each one needs
+	// its own VKey witness or the transaction will be rejected.
+	var signingKey *UTxOKey
+	witnessKeys := make([]*UTxOKey, 0, len(inputs))
+	seenWitnessKeys := make(map[*UTxOKey]struct{}, len(inputs))
+	for _, u := range inputs {
+		if u.SigningKey != nil {
+			if signingKey == nil {
+				signingKey = u.SigningKey
+			}
+			if _, ok := seenWitnessKeys[u.SigningKey]; !ok {
+				witnessKeys = append(witnessKeys, u.SigningKey)
+				seenWitnessKeys[u.SigningKey] = struct{}{}
+			}
+		}
+	}
+	addr := deterministicAddr(inputs[0].TxHash)
+	if signingKey != nil {
+		addr = signingKey.Address
+	}
+
+	params := PaymentParams{
+		Inputs:      inputs,
+		ToAddr:      addr,
+		ChangeAddr:  addr,
+		SendAmount:  sendAmount,
+		Change:      change,
+		Fee:         fee,
+		WitnessKeys: witnessKeys,
+	}
+
+	buildPayment := BuildPayment
+	eraID := conwayEraID
+	if p.cfg.TransactionEra == "dijkstra" {
+		buildPayment = BuildDijkstraPayment
+		eraID = dijkstraEraID
+	}
+	txBytes, txID, err := buildPayment(params)
+	if err != nil {
+		p.logger.Error("build payment failed", "err", err)
+		p.wallet.ReturnUTxOs(inputs)
+		return false
+	}
+
+	submitErr := client.SubmitTx(eraID, txBytes)
+	entry := TxLog{
+		TxID:      txID,
+		TxType:    "payment",
+		EraID:     eraID,
+		NodeAddr:  client.Addr(),
+		BatchSize: batchSize,
+	}
+	if submitErr != nil {
+		entry.Status = "rejected"
+		entry.ErrorMsg = submitErr.Error()
+		p.wallet.ReturnUTxOs(inputs)
+		p.logger.Warn(
+			"tx rejected",
+			"tx_id", txID,
+			"err", submitErr,
+		)
+		// Do not retry the rejected transaction. Reconciliation may restore
+		// still-unspent inputs for a later, independently constructed payment.
+	} else {
+		entry.Status = "submitted"
+		p.logger.Info(
+			"tx submitted",
+			"tx_id", txID,
+			"send_lovelace", sendAmount,
+		)
+		// Quarantine submitted outputs for the configured confirmation window
+		// so an early fork cannot invalidate an immediate dependency chain.
+		confirmationDelay := p.cfg.confirmationDelay()
+		outputs := make([]UTxO, 0, 2)
+		if signingKey != nil {
+			outputs = append(outputs, UTxO{TxHash: txID, Index: 0, Amount: sendAmount, SigningKey: signingKey})
+		}
+		if change > 0 {
+			changeUTxO := UTxO{TxHash: txID, Index: 1, Amount: change}
+			if signingKey != nil {
+				changeUTxO.SigningKey = signingKey
+			}
+			outputs = append(outputs, changeUTxO)
+		}
+		p.wallet.RecordAccepted(txID, inputs, outputs, confirmationDelay)
+	}
+
+	if p.txlog != nil {
+		if logErr := p.txlog.Log(entry); logErr != nil {
+			p.logger.Error("txlog write failed", "err", logErr)
+		}
+	}
+	return submitErr == nil
+}
+
+// submitDelegation builds and submits a single signed stake-delegation
+// transaction. The first delegation for a credential also registers it.
+func (p *Pump) submitDelegation(client *NodeClient, batchSize int) bool {
+	if !p.cfg.delegationEnabled() {
+		return false
+	}
+	poolKeyHash, err := decodeConfiguredHash(
+		"TXPUMP_DELEGATION_POOL_KEY_HASH",
+		p.cfg.DelegationPoolKeyHash,
+	)
+	if err != nil {
+		p.logger.Error("invalid delegation pool key hash", "err", err)
+		return false
+	}
+	return p.submitCertTx(
+		client, batchSize, "delegation", stakeKeyDeposit, p.stakeRegistered,
+		func(inputs []UTxO, deposit, fee uint64, changeAddr []byte) ([]byte, error) {
+			credHash, credKey := credentialFor(inputs)
+			return BuildDelegationTx(
+				inputs, credHash, poolKeyHash, deposit, fee, changeAddr, credKey,
+			)
+		},
+	)
+}
+
+// submitGovernance builds and submits a single signed DRep certificate
+// transaction: a registration for a new DRep credential, otherwise an update.
+func (p *Pump) submitGovernance(client *NodeClient, batchSize int) bool {
+	return p.submitCertTx(
+		client, batchSize, "governance", drepDeposit, p.drepRegistered,
+		func(inputs []UTxO, deposit, fee uint64, changeAddr []byte) ([]byte, error) {
+			credHash, credKey := credentialFor(inputs)
+			if deposit > 0 {
+				return BuildDRepRegistrationTx(
+					inputs, credHash, deposit, fee, changeAddr, credKey,
+				)
+			}
+			return BuildDRepUpdateTx(inputs, credHash, fee, changeAddr, credKey)
+		},
+	)
+}
+
+// submitCertTx selects coins, builds a certificate transaction with build and
+// submits it. registered tracks credentials txpump has registered: an
+// unregistered credential pays registrationDeposit, and a fresh registration
+// is used only after the confirmation window, since the ledger rejects a
+// certificate for a credential whose registration is still pending. A
+// rejected registration marks the credential registered (the node may already
+// hold it) and a rejected follow-up forgets it, so a lost registration
+// self-corrects on the next attempt.
+func (p *Pump) submitCertTx(
+	client *NodeClient,
+	batchSize int,
+	txType string,
+	registrationDeposit uint64,
+	registered map[string]time.Time,
+	build func(inputs []UTxO, deposit, fee uint64, changeAddr []byte) ([]byte, error),
+) bool {
+	fee := jitteredFee(MinFee)
+	baseRequired := fee + minSendAmount
+	inputs, change, err := p.wallet.SelectCoins(baseRequired)
+	if err != nil {
+		p.logger.Warn(
+			"coin selection failed",
+			"tx_type", txType,
+			"required_lovelace", baseRequired,
+			"err", err,
+		)
+		return false
+	}
+	credHash, credKey := credentialFor(inputs)
+	credID := hex.EncodeToString(credHash)
+	usableAt, isRegistered := registered[credID]
+	if isRegistered && time.Now().Before(usableAt) {
+		p.wallet.ReturnUTxOs(inputs)
+		return false
+	}
+	var deposit uint64
+	if !isRegistered {
+		deposit = registrationDeposit
+		if change < deposit {
+			missingDeposit := deposit - change
+			extraInputs, _, selectErr := p.wallet.SelectCoins(missingDeposit)
+			if selectErr != nil {
+				p.wallet.ReturnUTxOs(inputs)
+				p.logger.Warn(
+					"coin selection failed for registration deposit",
+					"tx_type", txType,
+					"required_lovelace", missingDeposit,
+					"err", selectErr,
+				)
+				return false
+			}
+			inputs = append(inputs, extraInputs...)
+		}
+	}
+	changeAddr := controlledChangeAddr(inputs)
+
+	txBytes, err := build(inputs, deposit, fee, changeAddr)
+	if err != nil {
+		p.logger.Error("build tx failed", "tx_type", txType, "err", err)
+		p.wallet.ReturnUTxOs(inputs)
+		return false
+	}
+
+	txID := deriveTestTxID(txBytes)
+	submitErr := client.SubmitTx(conwayEraID, txBytes)
+	entry := TxLog{
+		TxID:      txID,
+		TxType:    txType,
+		EraID:     conwayEraID,
+		NodeAddr:  client.Addr(),
+		BatchSize: batchSize,
+	}
+	if submitErr != nil {
+		entry.Status = "rejected"
+		entry.ErrorMsg = submitErr.Error()
+		p.logger.Warn(
+			txType+" tx rejected",
+			"tx_id", txID,
+			"registration", deposit > 0,
+			"err", submitErr,
+		)
+		if isRegistered {
+			delete(registered, credID)
+		} else {
+			registered[credID] = time.Now()
+		}
+		p.wallet.ReturnUTxOs(inputs)
+	} else {
+		entry.Status = "submitted"
+		p.logger.Info(
+			txType+" tx submitted",
+			"tx_id", txID,
+			"registration", deposit > 0,
+		)
+		if !isRegistered {
+			registered[credID] = time.Now().Add(p.cfg.confirmationDelay())
+		}
+		var total uint64
+		for _, u := range inputs {
+			total += u.Amount
+		}
+		var outputs []UTxO
+		if change := total - fee - deposit; change > 0 {
+			outputs = []UTxO{{
+				TxHash: txID, Index: 0, Amount: change, SigningKey: credKey,
+			}}
+		}
+		p.wallet.RecordAccepted(txID, inputs, outputs, p.cfg.confirmationDelay())
+	}
+	if p.txlog != nil {
+		if logErr := p.txlog.Log(entry); logErr != nil {
+			p.logger.Error("txlog write failed", "err", logErr)
+		}
+	}
+	return submitErr == nil
+}
+
+// submitPlutus builds and submits either a Plutus lock or unlock transaction
+// (chosen randomly). Unlocking needs a locked output, a key-locked collateral
+// UTxO and the PlutusV3 cost model; otherwise it locks.
+func (p *Pump) submitPlutus(client *NodeClient, batchSize int) bool {
+	choose := IntRange
+	if p.intRangeFn != nil {
+		choose = p.intRangeFn
+	}
+	if len(p.plutusLocked) > 0 && len(p.cfg.PlutusV3CostModel) > 0 &&
+		choose(0, 1) == 1 {
+		if locked, ok := p.takeLockedPlutusUTxO(); ok {
+			return p.submitPlutusUnlock(client, batchSize, locked)
+		}
+	}
+	return p.submitPlutusLock(client, batchSize)
+}
+
+func (p *Pump) submitPlutusLock(client *NodeClient, batchSize int) bool {
+	fee := jitteredFee(MinFee)
+	required := plutusLockAmount + fee + minSendAmount
+	inputs, _, err := p.wallet.SelectCoins(required)
+	if err != nil {
+		p.logger.Warn(
+			"coin selection failed for plutus",
+			"kind", "plutus_lock",
+			"required_lovelace", required,
+			"err", err,
+		)
+		return false
+	}
+	changeAddr := controlledChangeAddr(inputs)
+	txBytes, err := BuildPlutusLockTx(
+		inputs, alwaysSucceedsScriptHash(), plutusLockAmount, fee, changeAddr,
+	)
+	if err != nil {
+		p.logger.Error("build plutus tx failed", "kind", "plutus_lock", "err", err)
+		p.wallet.ReturnUTxOs(inputs)
+		return false
+	}
+	txID, ok := p.submitPlutusTx(client, batchSize, "plutus_lock", txBytes)
+	if !ok {
+		p.wallet.ReturnUTxOs(inputs)
+		return false
+	}
+	p.addLockedPlutusUTxOAfter(p.cfg.confirmationDelay(), UTxO{
+		TxHash: txID,
+		Index:  0,
+		Amount: plutusLockAmount,
+		// Keep the wallet-controlled address and its key with the script
+		// output so the unlock returns spendable change to the same wallet.
+		Address:    append([]byte(nil), changeAddr...),
+		SigningKey: inputs[0].SigningKey,
+	})
+	var total uint64
+	for _, u := range inputs {
+		total += u.Amount
+	}
+	var outputs []UTxO
+	if change := total - plutusLockAmount - fee; change > 0 {
+		outputs = []UTxO{{
+			TxHash: txID, Index: 1, Amount: change, SigningKey: inputs[0].SigningKey,
+		}}
+	}
+	p.wallet.RecordAccepted(txID, inputs, outputs, p.cfg.confirmationDelay())
+	return true
+}
+
+func (p *Pump) submitPlutusUnlock(client *NodeClient, batchSize int, locked UTxO) bool {
+	// Collateral must cover 150% of the fee, including its jitter.
+	collateral, _, err := p.wallet.SelectCoins((plutusUnlockFee + maxFeeJitter) * 3 / 2)
+	if err != nil || len(collateral) != 1 || !collateral[0].SigningKey.canSign() {
+		if err == nil {
+			p.wallet.ReturnUTxOs(collateral)
+		}
+		p.logger.Warn("no key-locked collateral for plutus unlock", "err", err)
+		p.addLockedPlutusUTxO(locked)
+		return false
+	}
+	changeAddr, changeKey := locked.Address, locked.SigningKey
+	if len(changeAddr) == 0 || !changeKey.canSign() {
+		changeAddr, changeKey = collateral[0].SigningKey.Address, collateral[0].SigningKey
+	}
+	fee := jitteredFee(plutusUnlockFee)
+	txBytes, err := BuildPlutusUnlockTx(
+		locked, collateral[0], p.cfg.PlutusV3CostModel, fee, changeAddr,
+	)
+	if err != nil {
+		p.logger.Error("build plutus tx failed", "kind", "plutus_unlock", "err", err)
+		p.wallet.ReturnUTxOs(collateral)
+		p.addLockedPlutusUTxO(locked)
+		return false
+	}
+	txID, ok := p.submitPlutusTx(client, batchSize, "plutus_unlock", txBytes)
+	if !ok {
+		// The usual cause is a lock transaction that never reached the chain,
+		// so retrying the same output would only be rejected again. Abandon
+		// it; a still-locked output costs the harness plutusLockAmount.
+		p.wallet.ReturnUTxOs(collateral)
+		return false
+	}
+	// Collateral is only consumed if the script fails; keep it reserved with
+	// the transaction so reconciliation returns it once the tx settles.
+	outputs := []UTxO{{
+		TxHash: txID, Index: 0, Amount: locked.Amount - fee,
+		SigningKey: changeKey,
+	}}
+	if p.pendingPlutusUnlocks == nil {
+		p.pendingPlutusUnlocks = make(map[string]pendingPlutusUnlock)
+	}
+	p.pendingPlutusUnlocks[txID] = pendingPlutusUnlock{locked: locked}
+	p.wallet.RecordAccepted(txID, collateral, outputs, p.cfg.confirmationDelay())
+	return true
+}
+
+// maxFeeJitter bounds the random fee overpayment added to deterministic
+// workload transactions.
+const maxFeeJitter uint64 = 999_999
+
+// jitteredFee overpays base by a random amount below maxFeeJitter lovelace.
+// Certificate and Plutus transactions are otherwise fully determined by their
+// inputs, so after a rollback orphans one, the wallet would rebuild the same
+// transaction ID and the analyzer would report a duplicate submission;
+// payments get the same effect from their random amounts.
+func jitteredFee(base uint64) uint64 {
+	//nolint:gosec // IntRange returns a value in [0, maxFeeJitter]
+	return base + uint64(IntRange(0, int(maxFeeJitter)))
+}
+
+// submitPlutusTx submits a Plutus workload transaction and logs the outcome.
+func (p *Pump) submitPlutusTx(
+	client *NodeClient,
+	batchSize int,
+	kind string,
+	txBytes []byte,
+) (string, bool) {
+	txID := deriveTestTxID(txBytes)
+	submitErr := client.SubmitTx(conwayEraID, txBytes)
+	entry := TxLog{
+		TxID:      txID,
+		TxType:    "plutus",
+		EraID:     conwayEraID,
+		NodeAddr:  client.Addr(),
+		BatchSize: batchSize,
+		Status:    "submitted",
+	}
+	if submitErr != nil {
+		entry.Status = "rejected"
+		entry.ErrorMsg = submitErr.Error()
+		p.logger.Warn("plutus tx rejected", "kind", kind, "tx_id", txID, "err", submitErr)
+	} else {
+		p.logger.Info("plutus tx submitted", "kind", kind, "tx_id", txID)
+	}
+	if p.txlog != nil {
+		if logErr := p.txlog.Log(entry); logErr != nil {
+			p.logger.Error("txlog write failed", "err", logErr)
+		}
+	}
+	return txID, submitErr == nil
+}
+
+func (p *Pump) addLockedPlutusUTxO(utxo UTxO) {
+	p.plutusLocked = append(p.plutusLocked, utxo)
+}
+
+func (p *Pump) addLockedPlutusUTxOAfter(delay time.Duration, utxo UTxO) {
+	if delay > 0 {
+		utxo.availableAt = time.Now().Add(delay)
+	}
+	p.addLockedPlutusUTxO(utxo)
+}
+
+func (p *Pump) takeLockedPlutusUTxO() (UTxO, bool) {
+	now := time.Now()
+	for i := len(p.plutusLocked) - 1; i >= 0; i-- {
+		utxo := p.plutusLocked[i]
+		if !utxo.availableAt.IsZero() && utxo.availableAt.After(now) {
+			continue
+		}
+		p.plutusLocked = append(
+			p.plutusLocked[:i],
+			p.plutusLocked[i+1:]...,
+		)
+		return utxo, true
+	}
+	return UTxO{}, false
+}
+
+// cooldown waits for a random duration in [CooldownMin, CooldownMax]ms.
+// It returns true if the wait completed normally, false if ctx was cancelled.
+func (p *Pump) cooldown(ctx context.Context) bool {
+	if p.cooldownFn != nil {
+		return p.cooldownFn(ctx)
+	}
+	ms := IntRange(p.cfg.CooldownMin, p.cfg.CooldownMax)
+	timer := time.NewTimer(time.Duration(ms) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// deterministicAddr derives a 29-byte enterprise address from a tx hash string
+// for use as a test recipient / change address.  The address is not a real
+// key-derived address; it is sufficient for devnet transaction structure tests.
+func deterministicAddr(txHash string) []byte {
+	raw, _ := hex.DecodeString(txHash)
+	addr := make([]byte, 29)
+	addr[0] = 0x60 // enterprise address discriminant (devnet)
+	copy(addr[1:], raw)
+	return addr
+}
+
+// controlledChangeAddr returns an address controlled by the selected inputs.
+// Unsigned harness inputs may not carry a key; their historical deterministic
+// fallback keeps those workloads structurally valid.
+func controlledChangeAddr(inputs []UTxO) []byte {
+	for _, input := range inputs {
+		if input.SigningKey != nil && len(input.SigningKey.Address) > 0 {
+			return append([]byte(nil), input.SigningKey.Address...)
+		}
+		if len(input.Address) > 0 {
+			return append([]byte(nil), input.Address...)
+		}
+	}
+	if len(inputs) == 0 {
+		return nil
+	}
+	return deterministicAddr(inputs[0].TxHash)
+}
+
+// deriveTestTxID returns the Cardano transaction identifier: the Blake2b-256
+// hash of the serialized transaction body, which is the identifier used by
+// LocalTxMonitor and in transaction output references.
+func deriveTestTxID(txBytes []byte) string {
+	var txParts []cbor.RawMessage
+	if _, err := cbor.Decode(txBytes, &txParts); err != nil ||
+		len(txParts) == 0 {
+		return ""
+	}
+	return common.Blake2b256Hash(txParts[0]).String()
+}
