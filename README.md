@@ -48,6 +48,7 @@ go build -o ./cardano-txpump ./cmd/txpump
 TXPUMP_NODE_ADDR=127.0.0.1:3002 \
 TXPUMP_NETWORK_MAGIC=42 \
 TXPUMP_GENESIS_UTXO_FILE=./config/utxos.json \
+TXPUMP_LOG_DIR=./logs \
 TXPUMP_TYPES=payment \
 ./cardano-txpump
 ```
@@ -81,13 +82,15 @@ set `TXPUMP_NODE_ADDR` to its container path, for example
 
 `TXPUMP_GENESIS_UTXO_FILE` points to a JSON file or a directory containing JSON
 files produced by the testnet-generation tool. It also accepts a Shelley
-genesis JSON file with `initialFunds`. For an explicit UTxO list, each spendable
-entry must include an `address` that matches a loaded signing key. The key
-files sit beside the JSON file (or in the UTxO directory) and use the names
-`genesis.<n>.skey`, `genesis.<n>.vkey`, and `genesis.<n>.addr.info`.
+genesis JSON file with `initialFunds`. For an explicit UTxO list, a spendable
+entry can include an `address` matching a loaded signing key. If `address` is
+omitted, `txHash` must match the Blake2b-256 hash of a loaded signing key's
+address. The key files sit beside the JSON file (or in the UTxO directory) and
+use the names `genesis.<n>.skey`, `genesis.<n>.vkey`, and
+`genesis.<n>.addr.info`.
 Each explicit record has a 32-byte hex `txHash`, an output `index`, an `amount`
-in lovelace, and the matching hex `address`; the JSON field names are
-`txHash`, `index`, `amount`, and `address`.
+in lovelace, and optionally a hex `address`; the JSON field names are `txHash`,
+`index`, `amount`, and `address`.
 
 For example, the mounted config directory can contain:
 
@@ -115,15 +118,16 @@ cannot find spendable UTxOs matched to signing keys.
 | `TXPUMP_TX_COUNT_MIN` / `TXPUMP_TX_COUNT_MAX` | `1` / `10` | Minimum and maximum transactions per batch. |
 | `TXPUMP_COOLDOWN_MIN` / `TXPUMP_COOLDOWN_MAX` | `500` / `2000` | Minimum and maximum delay between batches, in milliseconds. |
 | `TXPUMP_CONFIRMATION_SLOTS` | `30` | Slots to wait before reusing newly created outputs. |
-| `TXPUMP_STARTUP_TIMEOUT` | `60` | Seconds to establish a connection and submit the first transaction; `0` disables the deadline. |
+| `TXPUMP_STARTUP_TIMEOUT` | `60` | Seconds allowed for startup, including waiting for genesis, establishing a connection, and submitting the first transaction; `0` disables the deadline. |
 | `TXPUMP_LOG_DIR` | `/logs` | Directory for structured transaction logs. |
 
 Delegation workloads need a pool key hash. The container entrypoint can derive
 it from `/configs/keys/cold.vkey`; otherwise set
 `TXPUMP_DELEGATION_POOL_KEY_HASH`. Plutus workloads use the cost model from
-`TXPUMP_CONWAY_GENESIS_FILE`; transactions that need the model are skipped if
-it is unavailable. `TXPUMP_FALLBACK_ADDR` can name a second N2C address to try
-when the primary address fails.
+`TXPUMP_CONWAY_GENESIS_FILE`; Plutus unlock transactions are skipped when no
+model is loaded. If this file is configured but unreadable or invalid, startup
+fails. `TXPUMP_FALLBACK_ADDR` can name a second N2C address to try when the
+primary address fails.
 
 See [`internal/txpump/config.go`](internal/txpump/config.go) for all supported
 variables and validation rules.
