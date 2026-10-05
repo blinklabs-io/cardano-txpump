@@ -369,7 +369,7 @@ func (p *Pump) waitForGenesis(
 // stopStartupTimeout disables the readiness deadline after the first
 // successful submission. The deadline only protects the pre-ready phase.
 func stopStartupTimeout(timer **time.Timer, deadline *<-chan time.Time) {
-	if *timer != nil {
+	if timer != nil && *timer != nil {
 		(*timer).Stop()
 		*timer = nil
 	}
@@ -550,6 +550,13 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 			"coin selection failed",
 			"required_lovelace", required,
 			"err", err,
+		)
+		return false
+	}
+	if len(inputs) == 0 {
+		p.logger.Warn(
+			"coin selection returned no inputs",
+			"required_lovelace", required,
 		)
 		return false
 	}
