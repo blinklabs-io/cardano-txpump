@@ -24,9 +24,9 @@ import (
 	"github.com/blinklabs-io/gouroboros/ledger/common"
 )
 
-// alwaysSucceedsScriptHex is a PlutusV3 script, as carried in a witness set
-// (a CBOR byte string wrapping the flat program), for
+// alwaysSucceedsScriptHex is the Flat-encoded PlutusV3 program for
 // (program 1.1.0 (lam ctx (con unit ()))): it accepts any script context.
+// Witness-set encoding wraps these raw bytes in a CBOR byte string.
 const alwaysSucceedsScriptHex = "0101002499"
 
 // plutusV3 is the Plutus language version index used by protocol parameter
