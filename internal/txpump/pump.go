@@ -852,6 +852,13 @@ func (p *Pump) submitPlutusLock(client *NodeClient, batchSize int) bool {
 		)
 		return false
 	}
+	if len(inputs) == 0 {
+		p.logger.Warn(
+			"coin selection returned no inputs for plutus lock",
+			"required_lovelace", required,
+		)
+		return false
+	}
 	changeAddr := controlledChangeAddr(inputs)
 	txBytes, err := BuildPlutusLockTx(
 		inputs, alwaysSucceedsScriptHash(), plutusLockAmount, fee, changeAddr,
