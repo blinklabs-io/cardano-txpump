@@ -12,6 +12,9 @@ on:
       - scripts/**
       - .github/workflows/ci-docker.yml
 
+permissions:
+  contents: read
+
 jobs:
   orchestrate:
     uses: blinklabs-io/actions/.github/workflows/reuseable-ci-docker-multiarch.yml@main

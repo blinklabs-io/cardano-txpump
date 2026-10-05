@@ -24,6 +24,8 @@ on:
 jobs:
   go-test:
     uses: blinklabs-io/actions/.github/workflows/reuseable-go-test.yml@main
+    permissions:
+      contents: read
     with:
       nilaway-version: latest
       run-golangci-lint: true
