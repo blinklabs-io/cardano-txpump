@@ -45,6 +45,7 @@ func TestWallet_AddAfterQuarantinesSubmittedOutputs(t *testing.T) {
 	require.Equal(t, uint64(5_000_000), w.Balance())
 	selected, _, err := w.SelectCoins(1_000_000)
 	require.NoError(t, err)
+	require.Len(t, selected, 1)
 	require.Equal(t, "pending", selected[0].TxHash)
 }
 
