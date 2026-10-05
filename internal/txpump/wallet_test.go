@@ -131,6 +131,7 @@ func TestWalletRollbackRestoresFundingForNextPayment(t *testing.T) {
 	)
 	selected, _, err := w.SelectCoins(1_000_000)
 	require.NoError(t, err)
+	require.Len(t, selected, 1)
 	require.Equal(t, source.TxHash, selected[0].TxHash)
 }
 
@@ -156,6 +157,7 @@ func TestWalletAbsenceGraceResetsAfterMempoolReappearance(t *testing.T) {
 	require.Empty(t, w.PendingIDs())
 	selected, _, err := w.SelectCoins(1)
 	require.NoError(t, err)
+	require.Len(t, selected, 1)
 	require.Equal(t, source.TxHash, selected[0].TxHash)
 }
 
@@ -221,6 +223,7 @@ func TestWalletRollbackRevivesSeededInputWithSnapshotAddress(t *testing.T) {
 	)
 	selected, _, err := w.SelectCoins(1_000_000)
 	require.NoError(t, err)
+	require.Len(t, selected, 1)
 	require.Equal(t, source.TxHash, selected[0].TxHash)
 	require.Same(t, key, selected[0].SigningKey)
 }
@@ -237,6 +240,7 @@ func TestWalletConfirmedParentOutputSurvivesPendingControl(t *testing.T) {
 	w.ReconcileSnapshot([]UTxO{parentOut}, map[string]bool{"parent": false})
 	selected, _, err := w.SelectCoins(1_000_000)
 	require.NoError(t, err)
+	require.Len(t, selected, 1)
 	require.Equal(t, parentOut.TxHash, selected[0].TxHash)
 }
 
@@ -273,6 +277,7 @@ func TestWalletSnapshotPreservesOutputPacing(t *testing.T) {
 	now = now.Add(time.Minute)
 	selected, _, err := w.SelectCoins(1_000_000)
 	require.NoError(t, err)
+	require.Len(t, selected, 1)
 	require.Equal(t, "tx", selected[0].TxHash)
 }
 
@@ -321,6 +326,7 @@ func TestWallet_ZeroValueRemainsUsable(t *testing.T) {
 	require.Equal(t, uint64(2_000_000), w.Balance())
 	selected, change, err := w.SelectCoins(1_000_000)
 	require.NoError(t, err)
+	require.Len(t, selected, 1)
 	require.Equal(t, uint64(1_000_000), change)
 	require.Equal(t, "available", selected[0].TxHash)
 	require.Zero(t, w.Len())
