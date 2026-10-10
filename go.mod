@@ -5,8 +5,8 @@ go 1.26.5
 toolchain go1.26.7
 
 require (
-	github.com/blinklabs-io/gouroboros v0.208.5
-	github.com/blinklabs-io/plutigo v0.8.0
+	github.com/blinklabs-io/gouroboros v0.211.0
+	github.com/blinklabs-io/plutigo v0.8.1
 	github.com/stretchr/testify v1.12.1
 	gopkg.in/yaml.v3 v3.0.1
 )
