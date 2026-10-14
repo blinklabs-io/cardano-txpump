@@ -26,7 +26,8 @@ import (
 
 // alwaysSucceedsScriptHex is the Flat-encoded PlutusV3 program for
 // (program 1.1.0 (lam ctx (con unit ()))): it accepts any script context.
-// Witness-set encoding wraps these raw bytes in a CBOR byte string.
+// A ledger script is these bytes wrapped in a CBOR byte string; see
+// alwaysSucceedsScript.
 const alwaysSucceedsScriptHex = "0101002499"
 
 // plutusV3 is the Plutus language version index used by protocol parameter
@@ -44,10 +45,14 @@ const plutusUnlockFee uint64 = 400_000
 // script; it is far above what the script uses.
 var plutusUnlockExUnits = common.ExUnits{Memory: 100_000, Steps: 100_000_000}
 
-// alwaysSucceedsScript returns the always-succeeds PlutusV3 script bytes.
+// alwaysSucceedsScript returns the always-succeeds PlutusV3 script as a ledger
+// carries it: the Flat program wrapped in a CBOR byte string. The witness set
+// holds these bytes, and the script hash covers them, so using the bare Flat
+// program makes a node reject the script as malformed.
 func alwaysSucceedsScript() []byte {
-	b, _ := hex.DecodeString(alwaysSucceedsScriptHex)
-	return b
+	flat, _ := hex.DecodeString(alwaysSucceedsScriptHex)
+	wrapped, _ := cbor.Encode(flat)
+	return wrapped
 }
 
 // alwaysSucceedsScriptHash returns the ledger hash of the always-succeeds
