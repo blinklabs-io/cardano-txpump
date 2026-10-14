@@ -132,7 +132,11 @@ it from `/configs/keys/cold.vkey`; otherwise set
 `TXPUMP_DELEGATION_POOL_KEY_HASH`. Plutus workloads use the cost model from
 `TXPUMP_CONWAY_GENESIS_FILE`; Plutus unlock transactions are skipped when no
 model is loaded. If this file is configured but unreadable or invalid, startup
-fails. `TXPUMP_FALLBACK_ADDR` can name a second N2C address to try when the
+fails. Script apps build and check their transactions against mainnet-like
+Conway parameters; `TXPUMP_ALONZO_GENESIS_FILE`, when set, overrides the
+execution prices, the per-transaction execution-unit limit and the collateral
+settings from the network's Alonzo genesis. The fee coefficients are not read
+from genesis and stay at 44 lovelace per byte plus 155381. `TXPUMP_FALLBACK_ADDR` can name a second N2C address to try when the
 primary address fails.
 
 See [`internal/txpump/config.go`](internal/txpump/config.go) for all supported

@@ -61,6 +61,11 @@ type ScriptTxSpec struct {
 	CostModel []int64
 	// SigningKeys are extra signers, such as the holders of RequiredSigners.
 	SigningKeys []*UTxOKey
+	// ChangeIndex is the output PlanScriptTx takes the fee from; that
+	// output's Lovelace is the change before the fee, and Fee is ignored.
+	// -1 means Fee is final and already accounted for. BuildScriptTx
+	// ignores it.
+	ChangeIndex int
 }
 
 // scriptTxBody is a Conway transaction body that spends a script.
