@@ -66,7 +66,7 @@ func TestRunBatchDispatchesRegisteredAppWithUser(t *testing.T) {
 	RegisterApp("rec", app)
 	p, users := appTestPump(t, "rec")
 
-	submitted := p.runBatch(context.Background(), nil, 5)
+	submitted := p.runBatch(context.Background(), &NodeClient{}, 5)
 
 	assert.Equal(t, 5, submitted)
 	require.Len(t, app.envs, 5)
@@ -82,7 +82,7 @@ func TestRunAppWithoutUsersDoesNothing(t *testing.T) {
 	app := &recordingApp{}
 	p, _ := appTestPump(t, "rec")
 	p.users = nil
-	assert.False(t, p.runApp(nil, 1, "rec", app))
+	assert.False(t, p.runApp(&NodeClient{}, 1, "rec", app))
 	assert.Empty(t, app.envs)
 }
 

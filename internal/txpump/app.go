@@ -92,7 +92,10 @@ func lookupApp(name string) (App, bool) {
 	appsMu.RLock()
 	defer appsMu.RUnlock()
 	a, ok := apps[name]
-	return a, ok
+	if !ok || a == nil {
+		return nil, false
+	}
+	return a, true
 }
 
 func registeredAppNames() []string {
