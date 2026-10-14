@@ -31,6 +31,12 @@ The workload types exercise different ledger paths:
 - `plutus` locks ADA at an always-succeeds Plutus V3 script and can later spend
   that output; it starts in epoch 3 and needs the network's Plutus V3 cost
   model to unlock outputs.
+- `peer_payment` pays ADA from one genesis-keyed user to another, so outputs
+  change owner. It does nothing when the wallet holds a single key.
+
+Each genesis signing key is one user. Registered apps such as `peer_payment`
+run as a randomly chosen user each time; `payment` and the other core types
+continue to draw from the whole wallet.
 
 Submitted and rejected transactions are reported as JSON logs and appended to
 `$TXPUMP_LOG_DIR/txpump.log` (default `/logs/txpump.log`).
@@ -113,7 +119,7 @@ cannot find spendable UTxOs matched to signing keys.
 | `TXPUMP_NETWORK_MAGIC` | `42` | Network magic; read from `TXPUMP_GENESIS_FILE` when unset. |
 | `TXPUMP_GENESIS_UTXO_FILE` | unset | Initial UTxOs and the directory containing their signing keys. Required for a funded run. |
 | `TXPUMP_GENESIS_FILE` | unset | Testnet spec or Shelley genesis JSON for epoch, slot, and system-start parameters. YAML specs need a resolved `systemStartUnix`. |
-| `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types. |
+| `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types: the four core types plus registered apps (`peer_payment`). |
 | `TXPUMP_TRANSACTION_ERA` | `conway` | `conway` supports all workload types; `dijkstra` supports payments only. |
 | `TXPUMP_TX_COUNT_MIN` / `TXPUMP_TX_COUNT_MAX` | `1` / `10` | Minimum and maximum transactions per batch. |
 | `TXPUMP_COOLDOWN_MIN` / `TXPUMP_COOLDOWN_MAX` | `500` / `2000` | Minimum and maximum delay between batches, in milliseconds. |
