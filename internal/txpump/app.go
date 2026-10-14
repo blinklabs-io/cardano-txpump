@@ -57,6 +57,19 @@ type App interface {
 	Step(env *AppEnv) (submitted bool, err error)
 }
 
+// gatedApp is implemented by apps that cannot run with every wallet, such as
+// one needing a second user. A type that can never submit must not count as
+// enabled, or the startup deadline stays armed and the pump exits on the
+// readiness timeout instead of idling.
+type gatedApp interface {
+	Enabled(users int) bool
+}
+
+func appEnabled(app App, users int) bool {
+	g, ok := app.(gatedApp)
+	return !ok || g.Enabled(users)
+}
+
 // RegisterApp makes an app selectable by name. It panics on a bad name
 // because registration happens at init time, and a shadowed core type would
 // silently change what a run exercises.

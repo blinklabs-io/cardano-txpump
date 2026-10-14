@@ -56,7 +56,7 @@ func appTestPump(t *testing.T, types ...string) (*Pump, []*User) {
 func TestEnabledTypesIncludesRegisteredApps(t *testing.T) {
 	resetAppsForTest(t)
 	RegisterApp("fake_once", &fakeApp{})
-	got := enabledTypes([]string{"payment", "fake_once", "nope"}, 0, false)
+	got := enabledTypes([]string{"payment", "fake_once", "nope"}, 0, false, 1)
 	assert.Equal(t, []string{"payment", "fake_once"}, got)
 }
 
@@ -84,4 +84,27 @@ func TestRunAppWithoutUsersDoesNothing(t *testing.T) {
 	p.users = nil
 	assert.False(t, p.runApp(nil, 1, "rec", app))
 	assert.Empty(t, app.envs)
+}
+
+type gatedTestApp struct{ fakeApp }
+
+func (*gatedTestApp) Enabled(users int) bool { return users >= 2 }
+
+func TestEnabledTypesHonoursAppGate(t *testing.T) {
+	resetAppsForTest(t)
+	RegisterApp("gated", &gatedTestApp{})
+	assert.Empty(t, enabledTypes([]string{"gated"}, 0, false, 1))
+	assert.Equal(t, []string{"gated"}, enabledTypes([]string{"gated"}, 0, false, 2))
+}
+
+// A single-key wallet cannot run peer_payment; counting it as enabled would
+// keep the startup deadline armed and exit on the readiness timeout.
+func TestHasEnabledTypesFalseForPeerPaymentWithOneUser(t *testing.T) {
+	ka := &UTxOKey{Address: []byte{0x60, 0x0a}}
+	w := NewWallet()
+	w.Add(UTxO{TxHash: strings.Repeat("aa", 32), Amount: 1, SigningKey: ka})
+	p := NewPump(&Config{Types: []string{"peer_payment"}}, w,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil, time.Now())
+	p.users = usersFromWallet(w)
+	assert.False(t, p.hasEnabledTypes())
 }

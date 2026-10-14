@@ -386,6 +386,7 @@ func (p *Pump) hasEnabledTypes() bool {
 		p.cfg.Types,
 		p.epochFromSlot(p.currentSlot()),
 		p.cfg.delegationEnabled(),
+		len(p.users),
 	)) > 0
 }
 
@@ -427,6 +428,7 @@ func enabledTypes(
 	types []string,
 	epoch uint64,
 	delegationEnabled bool,
+	users int,
 ) []string {
 	var enabled []string
 	for _, t := range types {
@@ -446,7 +448,7 @@ func enabledTypes(
 				enabled = append(enabled, t)
 			}
 		default:
-			if _, ok := lookupApp(t); ok {
+			if app, ok := lookupApp(t); ok && appEnabled(app, users) {
 				enabled = append(enabled, t)
 			}
 		}
@@ -482,7 +484,9 @@ func (p *Pump) runBatch(
 	}
 	slot := p.currentSlot()
 	epoch := p.epochFromSlot(slot)
-	active := enabledTypes(p.cfg.Types, epoch, p.cfg.delegationEnabled())
+	active := enabledTypes(
+		p.cfg.Types, epoch, p.cfg.delegationEnabled(), len(p.users),
+	)
 	if len(active) == 0 {
 		return 0
 	}

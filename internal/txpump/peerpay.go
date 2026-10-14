@@ -22,6 +22,9 @@ func init() { RegisterApp("peer_payment", peerPayment{}) }
 // transactions whose outputs belong to a different key than their inputs.
 type peerPayment struct{}
 
+// Enabled reports whether there is a second user to pay.
+func (peerPayment) Enabled(users int) bool { return users >= 2 }
+
 func (peerPayment) Step(env *AppEnv) (bool, error) {
 	var peers []*User
 	for _, u := range env.Users {
