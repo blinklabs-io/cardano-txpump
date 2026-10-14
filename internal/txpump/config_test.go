@@ -187,3 +187,21 @@ func clearTxpumpEnv(t *testing.T) {
 		t.Setenv(key, "")
 	}
 }
+
+func TestValidateAcceptsRegisteredAppsAndRejectsUnknown(t *testing.T) {
+	resetAppsForTest(t)
+	RegisterApp("fake_once", &fakeApp{})
+	cfg := Config{
+		TxCountMin: 1, TxCountMax: 2,
+		CooldownMin: 0, CooldownMax: 1,
+		TransactionEra: "conway",
+		Types:          []string{"payment", "fake_once"},
+	}
+	require.NoError(t, cfg.validate())
+
+	cfg.Types = []string{"nope"}
+	err := cfg.validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "fake_once")
+	require.Contains(t, err.Error(), "payment")
+}
