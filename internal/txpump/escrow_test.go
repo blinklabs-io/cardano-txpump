@@ -21,6 +21,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -345,4 +346,51 @@ func TestEscrowEnabledNeedsTwoUsers(t *testing.T) {
 func TestEscrowIsRegistered(t *testing.T) {
 	_, ok := lookupApp("escrow")
 	require.True(t, ok)
+}
+
+// Collateral is not consumed by an accepted script transaction, but it must
+// stay out of coin selection until the transaction settles: a payment that
+// spent it first would make the node reject the script transaction after the
+// position was already settled as spent.
+func TestEscrowKeepsCollateralReservedUntilReconciled(t *testing.T) {
+	h := newEscrowHarness(t)
+	initiator, recipient := h.users[0], h.users[1]
+	h.step(initiator, pickInitiate, escrowAmountMin)
+	deposit := h.step(recipient, pickAdvance, 0, pickProceed, escrowAmountMin)
+
+	collateral := deposit.Collateral()
+	require.Len(t, collateral, 1)
+	ref := collateral[0].Id().String() + ":" + strconv.FormatUint(uint64(collateral[0].Index()), 10)
+
+	selectable := func() bool {
+		h.wallet.mu.Lock()
+		defer h.wallet.mu.Unlock()
+		for _, u := range h.wallet.utxos {
+			if utxoKey(u) == ref {
+				return true
+			}
+		}
+		return false
+	}
+	require.False(t, selectable(), "collateral must stay reserved with the pending transaction")
+	all, _, err := h.wallet.SelectCoins(h.wallet.Balance())
+	require.NoError(t, err)
+	for _, u := range all {
+		require.NotEqual(t, ref, utxoKey(u))
+	}
+	h.wallet.ReturnUTxOs(all)
+
+	// Once the transaction has left the mempool and the snapshot still holds
+	// the unconsumed collateral, reconciliation releases it.
+	var snapshot []UTxO
+	h.wallet.mu.Lock()
+	snapshot = append(snapshot, h.wallet.utxos...)
+	h.wallet.mu.Unlock()
+	snapshot = append(snapshot, UTxO{
+		TxHash: collateral[0].Id().String(), Index: collateral[0].Index(),
+		Amount: 50_000_000, Address: recipient.Key.Address,
+	})
+	h.wallet.ReconcileSnapshot(snapshot, map[string]bool{})
+	h.wallet.ReconcileSnapshot(snapshot, map[string]bool{})
+	require.True(t, selectable(), "reconciliation releases unconsumed collateral")
 }

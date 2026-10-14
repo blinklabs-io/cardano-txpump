@@ -473,10 +473,9 @@ func (a *escrowApp) spend(env *AppEnv, params ScriptParams, pos *escrowPosition,
 		env.Logger.Warn("tx rejected", "action", action.String(), "tx_id", txID, "err", err)
 		return false, nil
 	}
-	env.Wallet.ReturnUTxOs(collateral)
-
 	outs, err := KnownUTxOsFromTx(txBytes)
 	if err != nil {
+		env.Wallet.ReturnUTxOs(collateral)
 		a.settle(pos, true, nil, false, false)
 		return false, err
 	}
@@ -492,7 +491,11 @@ func (a *escrowApp) spend(env *AppEnv, params ScriptParams, pos *escrowPosition,
 		}
 	}
 	delay := env.Cfg.confirmationDelay()
-	env.Wallet.RecordAccepted(txID, inputs, walletOuts, delay)
+	// Collateral is not consumed, but it stays reserved with the pending
+	// transaction: spent elsewhere first, it would make a node reject this
+	// transaction after the position was settled as spent. Reconciliation
+	// releases it once the transaction has settled.
+	env.Wallet.RecordAccepted(txID, append(inputs, collateral...), walletOuts, delay)
 
 	var next *escrowPosition
 	if action == escrowDeposit {
