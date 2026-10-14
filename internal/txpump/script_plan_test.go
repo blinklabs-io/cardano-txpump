@@ -133,3 +133,25 @@ func ratFrom(t *testing.T, s string) *big.Rat {
 	require.True(t, ok)
 	return r
 }
+
+// The measuring pass declares the maximum budget only to measure; on a
+// network with a large budget its fee would exceed a small locked value,
+// although the final transaction declares far less and pays far less.
+func TestPlanScriptTxSmallValueUnderLargeBudget(t *testing.T) {
+	spec, known, key := escrowInitiationFixture(t)
+	datum, err := encodePlutusData(escrowInitiationDatum(keyAddressData(keyHash(key)), escrowAmountMin))
+	require.NoError(t, err)
+	known[0].Lovelace, known[0].Datum = escrowAmountMin, datum
+	spec.ScriptInputs[0].UTxO.Amount = escrowAmountMin
+	spec.WalletInputs = nil
+	spec.Fee = 0
+	spec.ChangeIndex = 0
+	spec.Outputs = []ScriptOutput{{Address: enterpriseAddr(key), Lovelace: escrowAmountMin}}
+	p := DefaultScriptParams(spec.CostModel)
+	p.MaxTxExUnits.Memory = 20_000_000
+	v := NewVerifier(p)
+	txBytes, _, err := PlanScriptTx(spec, v, p, known, 100)
+	require.NoError(t, err)
+	_, err = v.Verify(txBytes, known, 100)
+	require.NoError(t, err)
+}
