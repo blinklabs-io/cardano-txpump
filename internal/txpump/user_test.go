@@ -40,4 +40,9 @@ func TestUsersFromWalletOrdersByAddress(t *testing.T) {
 
 func TestUsersFromWalletWithoutKeysIsEmpty(t *testing.T) {
 	assert.Empty(t, usersFromWallet(NewWallet()))
+
+	// UTxOs without a signing key do not make users either.
+	w := NewWallet()
+	w.Add(UTxO{TxHash: strings.Repeat("aa", 32), Amount: 1})
+	assert.Empty(t, usersFromWallet(w))
 }

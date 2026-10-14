@@ -62,3 +62,20 @@ func TestLookupAndNames(t *testing.T) {
 	assert.False(t, ok)
 	assert.Equal(t, []string{"alpha", "zeta"}, registeredAppNames())
 }
+
+func TestRegisterAppRejectsNamesTheConfigCannotSelect(t *testing.T) {
+	resetAppsForTest(t)
+	// TXPUMP_TYPES splits on commas and trims each item, so these names could
+	// never be selected, and a padded core name would select the built-in.
+	for _, name := range []string{
+		"a,b", " padded", "padded ", " payment", "tab\tname", "new\nline",
+	} {
+		assert.Panics(t, func() { RegisterApp(name, &fakeApp{}) }, "name %q", name)
+	}
+}
+
+func TestRegisterAppRejectsTypedNilApp(t *testing.T) {
+	resetAppsForTest(t)
+	var typedNil *fakeApp
+	assert.Panics(t, func() { RegisterApp("typed_nil", typedNil) })
+}

@@ -17,7 +17,9 @@ package txpump
 import (
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -74,8 +76,14 @@ func appEnabled(app App, users int) bool {
 // because registration happens at init time, and a shadowed core type would
 // silently change what a run exercises.
 func RegisterApp(name string, app App) {
-	if name == "" || app == nil {
+	if name == "" || isNilApp(app) {
 		panic("txpump: RegisterApp requires a name and an app")
+	}
+	// TXPUMP_TYPES splits on commas and trims each item, so a name with a
+	// comma or surrounding space could never be selected, and a padded core
+	// name would select the built-in instead.
+	if strings.TrimSpace(name) != name || strings.ContainsAny(name, ", \t\r\n") {
+		panic(fmt.Sprintf("txpump: app name %q cannot be selected by TXPUMP_TYPES", name))
 	}
 	if coreTypes[name] {
 		panic(fmt.Sprintf("txpump: %q is a core transaction type", name))
@@ -86,6 +94,22 @@ func RegisterApp(name string, app App) {
 		panic(fmt.Sprintf("txpump: app %q already registered", name))
 	}
 	apps[name] = app
+}
+
+// isNilApp reports a nil interface or one holding a nil pointer, map, slice,
+// function or channel, whose methods would panic when the pump called them.
+func isNilApp(app App) bool {
+	if app == nil {
+		return true
+	}
+	v := reflect.ValueOf(app)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan,
+		reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 func lookupApp(name string) (App, bool) {

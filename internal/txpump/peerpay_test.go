@@ -128,16 +128,18 @@ func TestPeerPaymentReturnsInputsOnRejection(t *testing.T) {
 }
 
 // Random send amount and fee make the change land in the sub-minimum dust
-// range on some iterations; BuildPayment rejects such change, so every run
-// must succeed only because the app folds it into the payment.
+// range on some iterations; BuildPayment rejects such change, so a payment
+// only succeeds there because the app folds it into the send. The sender is
+// funded for the whole send-plus-fee range, so every iteration must submit.
 func TestPeerPaymentFoldsDustChange(t *testing.T) {
 	ka, kb := peerTestKey(t, 0x0a), peerTestKey(t, 0x0b)
 	for i := 0; i < 300; i++ {
-		w := fundedWallet(3_000_000, 100_000_000, ka, kb)
+		w := fundedWallet(5_300_000, 100_000_000, ka, kb)
 		users := usersFromWallet(w)
 		env := peerEnv(w, users, func(string, string, []byte) error { return nil })
-		_, err := peerPayment{}.Step(env)
+		ok, err := peerPayment{}.Step(env)
 		require.NoError(t, err, "iteration %d", i)
+		require.True(t, ok, "iteration %d must submit, not skip", i)
 	}
 }
 
