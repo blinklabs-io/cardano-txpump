@@ -262,6 +262,19 @@ func (w *Wallet) Add(utxos ...UTxO) {
 	w.utxos = append(w.utxos, utxos...)
 }
 
+// AddKey registers a signing key without any UTxO, so a key that holds no
+// funds yet is still a user, can be paid, and has its address queried for
+// UTxOs.
+func (w *Wallet) AddKey(key *UTxOKey) {
+	if key == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.ensureMaps()
+	w.addresses[string(key.Address)] = key
+}
+
 // Balance returns the total lovelace held by the wallet.
 // If the sum would overflow uint64, math.MaxUint64 is returned.
 func (w *Wallet) Balance() uint64 {

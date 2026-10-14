@@ -147,3 +147,20 @@ func TestPeerPaymentIsRegistered(t *testing.T) {
 	_, ok := lookupApp("peer_payment")
 	assert.True(t, ok)
 }
+
+// A genesis key that holds no UTxO yet is still a user, so it can be paid.
+func TestPeerPaymentPaysAnUnfundedUser(t *testing.T) {
+	ka, kb := peerTestKey(t, 0x0a), peerTestKey(t, 0x0b)
+	w := fundedWallet(100_000_000, 0, ka, kb)
+	w.AddKey(kb)
+	users := usersFromWallet(w)
+	require.Len(t, users, 2)
+	var sent []byte
+	env := peerEnv(w, users, func(_, _ string, b []byte) error { sent = b; return nil })
+
+	ok, err := peerPayment{}.Step(env)
+
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.True(t, bytes.Contains(sent, kb.Address), "tx must pay the unfunded user")
+}

@@ -62,3 +62,22 @@ func TestWalletKeysSortedAndDistinct(t *testing.T) {
 	assert.Same(t, ka, keys[0])
 	assert.Same(t, kb, keys[1])
 }
+
+func TestAddKeyRegistersAnUnfundedKey(t *testing.T) {
+	ka := &UTxOKey{Address: []byte{0x60, 0x0a}}
+	kb := &UTxOKey{Address: []byte{0x60, 0x0b}}
+	w := NewWallet()
+	w.Add(UTxO{TxHash: strings.Repeat("aa", 32), Amount: 5_000_000, SigningKey: ka})
+	w.AddKey(kb)
+	w.AddKey(nil) // ignored
+
+	keys := w.Keys()
+	require.Len(t, keys, 2)
+	assert.Same(t, ka, keys[0])
+	assert.Same(t, kb, keys[1])
+	assert.Equal(t, uint64(5_000_000), w.Balance(), "a key adds no funds")
+	assert.Len(t, w.SigningAddresses(), 2, "its address is queried for UTxOs")
+
+	_, _, err := w.SelectCoinsForKey(kb, 1)
+	assert.ErrorIs(t, err, ErrInsufficientFunds)
+}
