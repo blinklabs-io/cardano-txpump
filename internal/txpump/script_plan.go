@@ -66,20 +66,17 @@ func PlanScriptTx(spec ScriptTxSpec, v *Verifier, p ScriptParams, known []KnownU
 		return nil
 	}
 
-	// Pass 1: the maximum budget, and a fee for it, so the script sees
-	// outputs close to the final ones.
+	// Pass 1 only measures: it declares the maximum budget and, when the
+	// planner owns the fee, no fee at all. Measuring skips the phase-1
+	// rules, and a fee for the maximum budget can exceed a small change
+	// output that easily pays the fee for the measured units.
 	spec.ExUnits = p.MaxTxExUnits
+	if spec.ChangeIndex >= 0 {
+		spec.Fee = 0
+	}
 	txBytes, _, err := BuildScriptTx(spec)
 	if err != nil {
 		return nil, "", err
-	}
-	if spec.ChangeIndex >= 0 {
-		if err := setFee(minFeeFor(len(txBytes), spec.ExUnits, p)); err != nil {
-			return nil, "", err
-		}
-		if txBytes, _, err = BuildScriptTx(spec); err != nil {
-			return nil, "", err
-		}
 	}
 	used, err := v.Measure(txBytes, known, slot)
 	if err != nil {
