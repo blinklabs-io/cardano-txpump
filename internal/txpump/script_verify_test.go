@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/blinklabs-io/gouroboros/ledger/common"
+	"github.com/blinklabs-io/gouroboros/ledger/conway"
 	"github.com/stretchr/testify/require"
 )
 
@@ -141,4 +142,29 @@ func TestKnownUTxOsFromTxCarriesInlineDatum(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, want, got[0].Datum)
 	require.Nil(t, got[1].Datum)
+}
+
+// The stub ledger panics on any method it does not implement; evaluation
+// must fail closed rather than crash the pump.
+func TestVerifierEvaluationPanicFailsClosed(t *testing.T) {
+	spec, known, _ := escrowInitiationFixture(t)
+	txBytes, _, err := BuildScriptTx(spec)
+	require.NoError(t, err)
+	orig := evaluatePlutus
+	t.Cleanup(func() { evaluatePlutus = orig })
+	evaluatePlutus = func(tx common.Transaction, ls common.LedgerState, pp *conway.ConwayProtocolParameters, budget *common.ExUnits) (map[common.RedeemerKey]common.ExUnits, error) {
+		if _, err := ls.StakeRegistration(nil); err != nil { // not implemented by the stub: panics
+			return nil, err
+		}
+		return orig(tx, ls, pp, budget)
+	}
+	v := NewVerifier(DefaultScriptParams(spec.CostModel))
+	require.NotPanics(t, func() {
+		_, err = v.Measure(txBytes, known, 100)
+	})
+	require.ErrorContains(t, err, "plutus")
+	require.NotPanics(t, func() {
+		_, err = v.Verify(txBytes, known, 100)
+	})
+	require.Error(t, err)
 }

@@ -249,9 +249,9 @@ func (v *Verifier) evaluate(txBytes []byte, known []KnownUTxO, slot uint64, budg
 			}
 		}
 	}
-	used, err := conway.EvaluatePlutusScripts(tx, ls, v.pp, budget)
+	used, err := runEvaluator(tx, ls, v.pp, budget)
 	if err != nil {
-		return nil, fmt.Errorf("verify: plutus: %w", err)
+		return nil, err
 	}
 	// The evaluator skips a redeemer whose script it cannot find, so an
 	// empty result for a transaction with redeemers means nothing ran.
@@ -261,6 +261,25 @@ func (v *Verifier) evaluate(txBytes []byte, known []KnownUTxO, slot uint64, budg
 	}
 	if len(used) != redeemers {
 		return nil, fmt.Errorf("verify: %d of %d redeemers evaluated", len(used), redeemers)
+	}
+	return used, nil
+}
+
+// evaluatePlutus is the Plutus evaluator; tests replace it.
+var evaluatePlutus = conway.EvaluatePlutusScripts
+
+// runEvaluator runs the Plutus evaluator, turning a panic (such as a stub
+// ledger method the evaluator needs but the verifier lacks) into an error so
+// that verification fails closed.
+func runEvaluator(tx common.Transaction, ls common.LedgerState, pp *conway.ConwayProtocolParameters, budget *common.ExUnits) (used map[common.RedeemerKey]common.ExUnits, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			used, err = nil, fmt.Errorf("verify: plutus evaluation needs ledger state the verifier lacks: %v", r)
+		}
+	}()
+	used, err = evaluatePlutus(tx, ls, pp, budget)
+	if err != nil {
+		return nil, fmt.Errorf("verify: plutus: %w", err)
 	}
 	return used, nil
 }
