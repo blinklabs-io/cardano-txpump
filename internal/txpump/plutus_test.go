@@ -68,9 +68,7 @@ func TestPumpTakeLockedPlutusUTxOSkipsQuarantinedOutput(t *testing.T) {
 }
 
 func TestAlwaysSucceedsScriptAcceptsAnyContextWithinBudget(t *testing.T) {
-	scriptCbor, err := cbor.Encode(alwaysSucceedsScript())
-	require.NoError(t, err)
-	script := common.PlutusV3Script(scriptCbor)
+	script := common.PlutusV3Script(alwaysSucceedsScript())
 	evalContext := cek.NewDefaultEvalContext(
 		cek.LanguageVersionV3, cek.ProtoVersion{Major: 10},
 	)
