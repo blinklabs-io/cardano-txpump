@@ -26,6 +26,19 @@ esac
 
 mkdir -p "${log_dir}"
 if [ "$(id -u)" = "0" ]; then
+  # Connecting to a Unix socket needs write permission on it, and a node may
+  # create its socket owned by root with mode 0755. In that case the process
+  # stays root, with the log file created up front and owned by txpump so the
+  # analyzer can still read it.
+  node_addr="${TXPUMP_NODE_ADDR:-/ipc/node.socket}"
+  if [ -S "${node_addr}" ] && ! setpriv --reuid=txpump --regid=txpump \
+    --clear-groups sh -c 'test -w "$1"' sh "${node_addr}"; then
+    echo "txpump: ${node_addr} is not writable by the txpump user; running as root" >&2
+    touch "${log_dir}/txpump.log"
+    chown -R txpump:txpump "${log_dir}"
+    chmod 0640 "${log_dir}/txpump.log"
+    exec /bin/txpump
+  fi
   chown -R txpump:txpump "${log_dir}"
   exec su -s /bin/sh txpump -c 'exec /bin/txpump'
 fi
