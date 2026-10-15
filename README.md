@@ -43,8 +43,10 @@ instances sharing one devnet can use disjoint keys and never spend the same
 UTxOs. It takes zero-based positions and inclusive ranges, such as `0,2-3`,
 into the `genesis.<n>.skey` files sorted by file name (so `genesis.10` sorts
 before `genesis.2`). UTxOs of unselected keys are ignored for every type.
-Startup fails on a malformed value or a position past the last key. Apps that
-need several users, such as `peer_payment`, count only the selected ones.
+Startup fails on a malformed value, a position past the last key, or a
+position above 65535. Apps that need several users, such as `peer_payment`,
+count only the selected ones. Types that work on a shared script address, such
+as `plutus`, are not partitioned by key: enable them on one instance only.
 
 Submitted and rejected transactions are reported as JSON logs and appended to
 `$TXPUMP_LOG_DIR/txpump.log` (default `/logs/txpump.log`).
