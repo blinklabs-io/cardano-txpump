@@ -98,6 +98,10 @@ func PlanScriptTx(spec ScriptTxSpec, v *Verifier, p ScriptParams, known []KnownU
 	// and re-signs the new body.
 	var txID string
 	fee := minFeeFor(len(txBytes), spec.ExUnits, p) * 11 / 10
+	if spec.ChangeIndex < 0 {
+		// The caller's fee is final; Verify enforces the minimum.
+		fee = spec.Fee
+	}
 	for range 4 {
 		if err := setFee(fee); err != nil {
 			return nil, "", err

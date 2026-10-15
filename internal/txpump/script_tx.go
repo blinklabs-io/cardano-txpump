@@ -169,10 +169,15 @@ func BuildScriptTx(spec ScriptTxSpec) ([]byte, string, error) {
 		}
 	}
 	collateralSet := make(cbor.Set, 0, len(spec.Collateral))
+	collateralSeen := make(map[string]struct{}, len(spec.Collateral))
 	for _, c := range spec.Collateral {
 		if _, dup := seen[utxoKey(c)]; dup {
 			return nil, "", fmt.Errorf("script_tx: collateral %s is also spent", utxoKey(c))
 		}
+		if _, dup := collateralSeen[utxoKey(c)]; dup {
+			return nil, "", fmt.Errorf("script_tx: collateral %s listed twice", utxoKey(c))
+		}
+		collateralSeen[utxoKey(c)] = struct{}{}
 		h, err := decodeTxHash(c.TxHash)
 		if err != nil {
 			return nil, "", err

@@ -298,8 +298,8 @@ func loadAlonzoScriptParams(path string, base ScriptParams) (ScriptParams, error
 			PrSteps json.RawMessage `json:"prSteps"`
 		} `json:"executionPrices"`
 		MaxTxExUnits *struct {
-			Mem   int64 `json:"exUnitsMem"`
-			Steps int64 `json:"exUnitsSteps"`
+			Mem   *int64 `json:"exUnitsMem"`
+			Steps *int64 `json:"exUnitsSteps"`
 		} `json:"maxTxExUnits"`
 		CollateralPercentage *uint `json:"collateralPercentage"`
 		MaxCollateralInputs  *uint `json:"maxCollateralInputs"`
@@ -321,8 +321,18 @@ func loadAlonzoScriptParams(path string, base ScriptParams) (ScriptParams, error
 		}
 	}
 	if g.MaxTxExUnits != nil {
-		p.MaxTxExUnits.Memory = g.MaxTxExUnits.Mem
-		p.MaxTxExUnits.Steps = g.MaxTxExUnits.Steps
+		if m := g.MaxTxExUnits.Mem; m != nil {
+			if *m <= 0 {
+				return ScriptParams{}, fmt.Errorf("%s: exUnitsMem must be positive", path)
+			}
+			p.MaxTxExUnits.Memory = *m
+		}
+		if s := g.MaxTxExUnits.Steps; s != nil {
+			if *s <= 0 {
+				return ScriptParams{}, fmt.Errorf("%s: exUnitsSteps must be positive", path)
+			}
+			p.MaxTxExUnits.Steps = *s
+		}
 	}
 	if g.CollateralPercentage != nil {
 		p.CollateralPercentage = *g.CollateralPercentage

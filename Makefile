@@ -16,7 +16,7 @@ TEMPLATES_COMMIT := cbc86fc5d5a25daece94666a9e6f1c48368c1c72
 .PHONY: blueprints
 blueprints:
 	@test -n "$(TEMPLATES_DIR)" || { echo "set TEMPLATES_DIR to a cardano-templates checkout"; exit 1; }
-	@test "$$(git -C $(TEMPLATES_DIR) rev-parse HEAD)" = "$(TEMPLATES_COMMIT)" || { echo "checkout must be at $(TEMPLATES_COMMIT)"; exit 1; }
-	@aiken --version | grep -q 'v1.1.22' || { echo "aiken v1.1.22 required"; exit 1; }
-	cd $(TEMPLATES_DIR)/escrow/onchain/aiken && aiken build
-	cp $(TEMPLATES_DIR)/escrow/onchain/aiken/plutus.json internal/txpump/blueprints/escrow.json
+	@test "$$(git -C "$(TEMPLATES_DIR)" rev-parse HEAD)" = "$(TEMPLATES_COMMIT)" || { echo "checkout must be at $(TEMPLATES_COMMIT)"; exit 1; }
+	@aiken --version | grep -Eq '(^|[[:space:]])v1\.1\.22(\+[^[:space:]]*)?$$' || { echo "aiken v1.1.22 required"; exit 1; }
+	cd "$(TEMPLATES_DIR)/escrow/onchain/aiken" && aiken build
+	cp "$(TEMPLATES_DIR)/escrow/onchain/aiken/plutus.json" internal/txpump/blueprints/escrow.json

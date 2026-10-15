@@ -100,6 +100,9 @@ func TestBuildScriptTxRejectsBadSpecs(t *testing.T) {
 		"collateral also an input": func(s *ScriptTxSpec) {
 			s.Collateral = []UTxO{s.WalletInputs[0]}
 		},
+		"duplicate collateral": func(s *ScriptTxSpec) {
+			s.Collateral = []UTxO{s.Collateral[0], s.Collateral[0]}
+		},
 		"collateral not key-locked": func(s *ScriptTxSpec) {
 			s.Collateral = []UTxO{{TxHash: strings.Repeat("aa", 32), Index: 1, Amount: 10_000_000}}
 		},

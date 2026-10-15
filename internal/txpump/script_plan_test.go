@@ -91,6 +91,54 @@ func TestPlanScriptTxFixedFeeMustCoverMinimum(t *testing.T) {
 	require.Error(t, err)
 }
 
+// A caller-supplied fee is final: one that covers the minimum is accepted
+// even when it is below the minimum plus the planner's own margin.
+func TestPlanScriptTxFixedFeeAtMinimumPlusSmallMarginIsAccepted(t *testing.T) {
+	spec, known, _ := escrowInitiationFixture(t)
+	p := DefaultScriptParams(spec.CostModel)
+	v := NewVerifier(p)
+	spec.ChangeIndex = -1
+	spec.Fee = 2_000_000
+	spec.Outputs[0].Lovelace = 25_000_000 - spec.Fee
+	txBytes, _, err := PlanScriptTx(spec, v, p, known, 100)
+	require.NoError(t, err)
+	used, err := v.Measure(txBytes, known, 100)
+	require.NoError(t, err)
+	var units common.ExUnits
+	for _, u := range used {
+		units = common.ExUnits{
+			Memory: min(scaleUp(u.Memory), p.MaxTxExUnits.Memory),
+			Steps:  min(scaleUp(u.Steps), p.MaxTxExUnits.Steps),
+		}
+	}
+	spec.Fee = minFeeFor(len(txBytes), units, p) * 102 / 100
+	spec.Outputs[0].Lovelace = 25_000_000 - spec.Fee
+	_, _, err = PlanScriptTx(spec, v, p, known, 100)
+	require.NoError(t, err)
+}
+
+func TestScriptParamsFromAlonzoGenesisPartialExUnitsKeepBase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alonzo.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"maxTxExUnits":{"exUnitsMem":12000000}}`), 0o600))
+	base := DefaultScriptParams(nil)
+	p, err := loadAlonzoScriptParams(path, base)
+	require.NoError(t, err)
+	require.Equal(t, int64(12_000_000), p.MaxTxExUnits.Memory)
+	require.Equal(t, base.MaxTxExUnits.Steps, p.MaxTxExUnits.Steps)
+}
+
+func TestScriptParamsFromAlonzoGenesisRejectsNonPositiveExUnits(t *testing.T) {
+	for _, body := range []string{
+		`{"maxTxExUnits":{"exUnitsMem":0,"exUnitsSteps":1}}`,
+		`{"maxTxExUnits":{"exUnitsMem":1,"exUnitsSteps":-5}}`,
+	} {
+		path := filepath.Join(t.TempDir(), "alonzo.json")
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+		_, err := loadAlonzoScriptParams(path, DefaultScriptParams(nil))
+		require.Error(t, err, body)
+	}
+}
+
 func TestScriptParamsFromAlonzoGenesis(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "alonzo.json")
