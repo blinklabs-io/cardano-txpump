@@ -134,6 +134,7 @@ cannot find spendable UTxOs matched to signing keys.
 | `TXPUMP_LOG_DIR` | `/logs` | Directory for structured transaction logs. |
 | `TXPUMP_CONWAY_GENESIS_FILE` | unset | Conway genesis supplying the Plutus V3 cost model. |
 | `TXPUMP_ALONZO_GENESIS_FILE` | unset | Alonzo genesis supplying execution prices, the execution-unit limit and collateral settings for script apps. |
+| `TXPUMP_REFERENCE_SCRIPTS` | `off` | Where script apps get their validator: `off` carries it in every witness set, `on` publishes it once and spends through a reference input, `mixed` chooses per spend. |
 
 Delegation workloads need a pool key hash. The container entrypoint can derive
 it from `/configs/keys/cold.vkey`; otherwise set
@@ -148,6 +149,35 @@ parameters. `TXPUMP_ALONZO_GENESIS_FILE`, when set, overrides the execution
 prices, the per-transaction execution-unit limit and the collateral settings
 with the network's Alonzo genesis values. The fee coefficients are not read
 from genesis and stay at 44 lovelace per byte plus 155381.
+
+## Reference scripts
+
+With `TXPUMP_REFERENCE_SCRIPTS=on` or `mixed`, txpump publishes the validator
+of each enabled script app (currently `escrow`) as a reference script, one
+transaction per validator, and later script spends name the published output
+as a reference input instead of carrying the validator in the witness set.
+`off` keeps the witness-set path, so one testnet can run instances of both.
+
+The wallet key that sorts last by address owns the published scripts. It is
+not a user and no other workload selects its funds, so the outputs are never
+spent by normal traffic. It needs funds of its own, a run needs at least two
+keys (three for `escrow`, which needs two users besides the publisher), and
+txpump refuses to start otherwise. In `on` mode a script spend waits until its
+reference is on chain; in `mixed` mode it falls back to the witness set.
+
+Nothing about published scripts is remembered between runs. Each round txpump
+reads the publisher address's outputs from the node and keeps those whose
+reference script hashes to an enabled app's validator, so a restart finds
+earlier publications and publishes only what is missing. If the node's UTxO
+query fails, nothing is published that round.
+
+The ledger charges reference scripts a per-byte fee, tiered in 25600-byte
+steps that each cost 1.2 times the last. The first tier's price is
+`minFeeRefScriptCostPerByte` from `TXPUMP_CONWAY_GENESIS_FILE` and is 15 when
+unset. The offline check applies that fee and the 200 KiB per-transaction
+reference-script limit. It cannot apply the 1 MiB per-block limit, which
+depends on the other transactions in a block, so a block that reaches it can
+still reject a spend the check accepted.
 
 See [`internal/txpump/config.go`](internal/txpump/config.go) for all supported
 variables and validation rules.
