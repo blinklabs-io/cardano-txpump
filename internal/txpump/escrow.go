@@ -358,7 +358,7 @@ func buildEscrowLock(
 		if err != nil {
 			return nil, "", 0, err
 		}
-		need := minFeeFor(len(txBytes), common.ExUnits{}, params)
+		need := minFeeFor(len(txBytes), common.ExUnits{}, params, 0)
 		if need <= fee {
 			bodyBytes, err := cbor.Encode(body)
 			if err != nil {

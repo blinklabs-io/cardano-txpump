@@ -111,7 +111,7 @@ func TestPlanScriptTxFixedFeeAtMinimumPlusSmallMarginIsAccepted(t *testing.T) {
 			Steps:  min(scaleUp(u.Steps), p.MaxTxExUnits.Steps),
 		}
 	}
-	spec.Fee = minFeeFor(len(txBytes), units, p) * 102 / 100
+	spec.Fee = minFeeFor(len(txBytes), units, p, 0) * 102 / 100
 	spec.Outputs[0].Lovelace = 25_000_000 - spec.Fee
 	_, _, err = PlanScriptTx(spec, v, p, known, 100)
 	require.NoError(t, err)

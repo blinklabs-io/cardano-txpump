@@ -43,8 +43,12 @@ type ScriptParams struct {
 	CollateralPercentage uint
 	AdaPerUtxoByte       uint64
 	CostModel            []int64
-	SystemStart          time.Time
-	SlotLength           time.Duration
+	// MinFeeRefScriptCostPerByte is the per-byte price of the first
+	// reference-script tier; nil means the mainnet value, 15. The tier size
+	// (25600 bytes) and the 6/5 growth between tiers are ledger constants.
+	MinFeeRefScriptCostPerByte *big.Rat
+	SystemStart                time.Time
+	SlotLength                 time.Duration
 }
 
 // DefaultScriptParams returns mainnet-like Conway parameters, which the
@@ -63,7 +67,18 @@ func DefaultScriptParams(costModel []int64) ScriptParams {
 		AdaPerUtxoByte:       4310,
 		CostModel:            costModel,
 		SlotLength:           time.Second,
+
+		MinFeeRefScriptCostPerByte: big.NewRat(defaultRefScriptCostPerByte, 1),
 	}
+}
+
+const defaultRefScriptCostPerByte = 15
+
+func (p ScriptParams) refScriptCost() *big.Rat {
+	if p.MinFeeRefScriptCostPerByte == nil {
+		return big.NewRat(defaultRefScriptCostPerByte, 1)
+	}
+	return p.MinFeeRefScriptCostPerByte
 }
 
 // KnownUTxO is a transaction output the verifier may resolve an input to.
@@ -72,6 +87,9 @@ type KnownUTxO struct {
 	Address  []byte
 	Lovelace uint64
 	Datum    []byte // inline datum CBOR, nil if none
+	// ScriptV3 is the Plutus V3 script (in witness-set form) the output
+	// carries as a reference script, nil if none.
+	ScriptV3 []byte
 }
 
 // SyntheticWalletUTxO describes a wallet UTxO as an output at address, for a
@@ -144,6 +162,15 @@ func (s *stubLedger) NetworkId() uint { return 0 }
 
 func (s *stubLedger) CostModels() map[common.PlutusLanguage]common.CostModel { return nil }
 
+// encodeScriptRefV3 returns the script_ref encoding of a Plutus V3 script.
+func encodeScriptRefV3(code []byte) (cbor.Tag, error) {
+	inner, err := cbor.Encode([]any{uint64(common.ScriptRefTypePlutusV3), code})
+	if err != nil {
+		return cbor.Tag{}, fmt.Errorf("script ref encoding failed: %w", err)
+	}
+	return cbor.Tag{Number: 24, Content: inner}, nil
+}
+
 // stubFor builds the ledger stub from known outputs.
 func stubFor(known []KnownUTxO, p ScriptParams) (*stubLedger, error) {
 	slotLen := p.SlotLength
@@ -170,6 +197,13 @@ func stubFor(known []KnownUTxO, p ScriptParams) (*stubLedger, error) {
 		out := plutusOutput{Address: k.Address, Amount: k.Lovelace}
 		if k.Datum != nil {
 			out.DatumOption = []any{uint64(1), cbor.Tag{Number: 24, Content: k.Datum}}
+		}
+		if k.ScriptV3 != nil {
+			ref, err := encodeScriptRefV3(k.ScriptV3)
+			if err != nil {
+				return nil, fmt.Errorf("known utxo %q: %w", k.Ref, err)
+			}
+			out.ScriptRef = ref
 		}
 		// Decoding the wire form yields an output exactly as a node would
 		// hold it, including the stored CBOR of the inline datum.
@@ -202,7 +236,7 @@ func conwayParams(p ScriptParams) *conway.ConwayProtocolParameters {
 		MemPrice:  ratOrZero(p.MemPrice),
 		StepPrice: ratOrZero(p.StepPrice),
 	}
-	pp.MinFeeRefScriptCostPerByte = &cbor.Rat{Rat: big.NewRat(15, 1)}
+	pp.MinFeeRefScriptCostPerByte = &cbor.Rat{Rat: new(big.Rat).Set(p.refScriptCost())}
 	pp.CostModels = map[uint][]int64{plutusV3: p.CostModel}
 	return pp
 }

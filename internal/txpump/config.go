@@ -266,6 +266,13 @@ func LoadConfig() (*Config, error) {
 
 	cfg.ScriptParams = DefaultScriptParams(cfg.PlutusV3CostModel)
 	cfg.ScriptParams.SlotLength = cfg.SlotLength
+	if path := os.Getenv("TXPUMP_CONWAY_GENESIS_FILE"); path != "" {
+		params, loadErr := loadConwayScriptParams(path, cfg.ScriptParams)
+		if loadErr != nil {
+			return nil, fmt.Errorf("TXPUMP_CONWAY_GENESIS_FILE: %w", loadErr)
+		}
+		cfg.ScriptParams = params
+	}
 	if cfg.SystemStartUnix != 0 {
 		cfg.ScriptParams.SystemStart = time.Unix(cfg.SystemStartUnix, 0)
 	}
@@ -339,6 +346,33 @@ func loadAlonzoScriptParams(path string, base ScriptParams) (ScriptParams, error
 	}
 	if g.MaxCollateralInputs != nil {
 		p.MaxCollateralInputs = *g.MaxCollateralInputs
+	}
+	return p, nil
+}
+
+// loadConwayScriptParams overlays the script parameters present in a Conway
+// genesis file on base; absent fields keep base's values.
+func loadConwayScriptParams(path string, base ScriptParams) (ScriptParams, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // trusted config path
+	if err != nil {
+		return ScriptParams{}, err
+	}
+	var g struct {
+		MinFeeRefScriptCostPerByte json.RawMessage `json:"minFeeRefScriptCostPerByte"`
+	}
+	if err := json.Unmarshal(raw, &g); err != nil {
+		return ScriptParams{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	p := base
+	if g.MinFeeRefScriptCostPerByte != nil {
+		cost, err := parseGenesisRat(g.MinFeeRefScriptCostPerByte)
+		if err != nil {
+			return ScriptParams{}, fmt.Errorf("%s: minFeeRefScriptCostPerByte: %w", path, err)
+		}
+		if cost.Sign() < 0 {
+			return ScriptParams{}, fmt.Errorf("%s: minFeeRefScriptCostPerByte must not be negative", path)
+		}
+		p.MinFeeRefScriptCostPerByte = cost
 	}
 	return p, nil
 }
