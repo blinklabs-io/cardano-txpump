@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	ouroboros "github.com/blinklabs-io/gouroboros"
@@ -40,6 +41,26 @@ type NodeClient struct {
 	proto  string
 	magic  uint32
 	logger *slog.Logger
+	// broken is set when a submission fails for any reason other than the
+	// node rejecting the transaction, so the caller stops using a
+	// connection whose every further call would wait out its own timeout.
+	broken atomic.Bool
+}
+
+// Broken reports whether the connection failed during a submission.
+func (c *NodeClient) Broken() bool {
+	return c != nil && c.broken.Load()
+}
+
+// submitFailureStatus names a failed submission in the transaction log: a
+// ledger rejection is data about the transaction, anything else is a
+// transport failure and says nothing about it.
+func submitFailureStatus(err error) string {
+	var rejected localtxsubmission.TransactionRejectedError
+	if errors.As(err, &rejected) {
+		return "rejected"
+	}
+	return "error"
 }
 
 // NewNodeClient creates a new NodeClient and connects it to the node at addr
@@ -100,6 +121,14 @@ func newNodeClient(
 // LocalTxSubmission mini-protocol.  eraID should be conwayEraID (6) for
 // Conway transactions.
 func (c *NodeClient) SubmitTx(eraID uint16, txBytes []byte) error {
+	err := c.submitTx(eraID, txBytes)
+	if err != nil && c != nil && submitFailureStatus(err) == "error" {
+		c.broken.Store(true)
+	}
+	return err
+}
+
+func (c *NodeClient) submitTx(eraID uint16, txBytes []byte) error {
 	if c == nil {
 		return errors.New("SubmitTx called on nil NodeClient")
 	}

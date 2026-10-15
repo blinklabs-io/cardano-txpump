@@ -44,10 +44,11 @@ type Pump struct {
 	stakeRegistered map[string]time.Time
 	drepRegistered  map[string]time.Time
 	// Hooks keep Run orchestration tests independent of a live node.
-	dialPrimaryFn func() (*NodeClient, error)
-	runBatchFn    func(context.Context, *NodeClient, int) int
-	cooldownFn    func(context.Context) bool
-	intRangeFn    func(int, int) int
+	dialPrimaryFn  func() (*NodeClient, error)
+	dialFallbackFn func() (*NodeClient, error)
+	runBatchFn     func(context.Context, *NodeClient, int) int
+	cooldownFn     func(context.Context) bool
+	intRangeFn     func(int, int) int
 }
 
 type pendingPlutusUnlock struct {
@@ -401,6 +402,9 @@ func (p *Pump) dialPrimary(timeout time.Duration) (*NodeClient, error) {
 // dialFallback connects to the fallback node address. Returns an error if no
 // fallback is configured.
 func (p *Pump) dialFallback(timeout time.Duration) (*NodeClient, error) {
+	if p.dialFallbackFn != nil {
+		return p.dialFallbackFn()
+	}
 	if p.cfg.FallbackAddr == "" {
 		return nil, errors.New("no fallback node address configured")
 	}
@@ -499,6 +503,14 @@ func (p *Pump) runBatch(
 		default:
 		}
 
+		if client.Broken() {
+			p.logger.Warn(
+				"node connection failed; ending batch",
+				"node", client.Addr(),
+				"submitted", submitted,
+			)
+			return submitted
+		}
 		txType := active[IntRange(0, len(active)-1)]
 		switch txType {
 		case "payment":
@@ -588,7 +600,7 @@ func (p *Pump) submitAppTx(
 		Status:    "submitted",
 	}
 	if submitErr != nil {
-		entry.Status = "rejected"
+		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
 	}
 	if p.txlog != nil {
@@ -706,7 +718,7 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 		BatchSize: batchSize,
 	}
 	if submitErr != nil {
-		entry.Status = "rejected"
+		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
 		p.wallet.ReturnUTxOs(inputs)
 		p.logger.Warn(
@@ -863,7 +875,7 @@ func (p *Pump) submitCertTx(
 		BatchSize: batchSize,
 	}
 	if submitErr != nil {
-		entry.Status = "rejected"
+		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
 		p.logger.Warn(
 			txType+" tx rejected",
@@ -1060,7 +1072,7 @@ func (p *Pump) submitPlutusTx(
 		Status:    "submitted",
 	}
 	if submitErr != nil {
-		entry.Status = "rejected"
+		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
 		p.logger.Warn("plutus tx rejected", "kind", kind, "tx_id", txID, "err", submitErr)
 	} else {
