@@ -118,6 +118,7 @@ func TestApplySnapshotRoutesReferenceOutputsToTheRegistryOnly(t *testing.T) {
 	require.NoError(t, p.setupReferenceScripts())
 	p.users = usersFromWallet(p.wallet)
 	pub := p.wallet.ReservedKey()
+	require.NotNil(t, pub)
 	v := mustNewEscrowApp().validator
 	snapshot := []UTxO{
 		{TxHash: strings.Repeat("0a", 32), Index: 0, Amount: 16_000_000, Address: pub.Address, ScriptRef: v.Code},

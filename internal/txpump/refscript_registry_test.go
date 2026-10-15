@@ -97,6 +97,7 @@ func TestPublishSpendsOnlyThePublisherKeysFunds(t *testing.T) {
 	// The other user's 80M is untouched by the publish.
 	inputs, _, err := h.wallet.SelectCoins(70_000_000)
 	require.NoError(t, err)
+	require.NotEmpty(t, inputs)
 	require.Equal(t, escrowTestKey(0x01).Address, inputs[0].SigningKey.Address)
 }
 
@@ -129,6 +130,7 @@ func TestSyncFindsThePublishedScriptAfterARestart(t *testing.T) {
 	_, err := h.publish()
 	require.NoError(t, err)
 	chain := onChain(t, h.submitted[0], h.key.Address)
+	require.NotEmpty(t, chain)
 
 	// A new process has no memory of the publish and must learn it from the
 	// chain instead of publishing again.
