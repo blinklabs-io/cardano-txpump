@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"strconv"
@@ -405,4 +406,22 @@ func decodeConfiguredHash(
 		)
 	}
 	return decoded, nil
+}
+
+// ParseLogLevel maps a TXPUMP_LOG_LEVEL value to a slog level. An empty value
+// is info.
+func ParseLogLevel(value string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return slog.LevelInfo, fmt.Errorf(
+		"TXPUMP_LOG_LEVEL: must be debug, info, warn or error, got %q", value,
+	)
 }

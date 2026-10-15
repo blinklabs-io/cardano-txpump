@@ -492,6 +492,17 @@ func (p *Pump) runBatch(
 	}
 
 	submitted := 0
+	attempted := 0
+	// Per-transaction detail is debug-level and in the transaction log; at
+	// info level a batch is one line, since a run submits thousands.
+	defer func() {
+		p.logger.Info(
+			"batch",
+			"attempted", attempted,
+			"submitted", submitted,
+			"node", client.Addr(),
+		)
+	}()
 	for i := 0; i < batchSize; i++ {
 		select {
 		case <-ctx.Done():
@@ -499,6 +510,7 @@ func (p *Pump) runBatch(
 		default:
 		}
 
+		attempted++
 		txType := active[IntRange(0, len(active)-1)]
 		switch txType {
 		case "payment":
@@ -520,7 +532,7 @@ func (p *Pump) runBatch(
 		default:
 			app, ok := lookupApp(txType)
 			if !ok {
-				p.logger.Warn(
+				p.logger.Debug(
 					"unknown tx type in config, skipping",
 					"type", txType,
 				)
@@ -631,7 +643,7 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 	required := sendAmount + fee
 	inputs, change, err := p.wallet.SelectCoins(required)
 	if err != nil {
-		p.logger.Warn(
+		p.logger.Debug(
 			"coin selection failed",
 			"required_lovelace", required,
 			"err", err,
@@ -639,7 +651,7 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 		return false
 	}
 	if len(inputs) == 0 {
-		p.logger.Warn(
+		p.logger.Debug(
 			"coin selection returned no inputs",
 			"required_lovelace", required,
 		)
@@ -709,7 +721,7 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 		entry.Status = "rejected"
 		entry.ErrorMsg = submitErr.Error()
 		p.wallet.ReturnUTxOs(inputs)
-		p.logger.Warn(
+		p.logger.Debug(
 			"tx rejected",
 			"tx_id", txID,
 			"err", submitErr,
@@ -718,7 +730,7 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 		// still-unspent inputs for a later, independently constructed payment.
 	} else {
 		entry.Status = "submitted"
-		p.logger.Info(
+		p.logger.Debug(
 			"tx submitted",
 			"tx_id", txID,
 			"send_lovelace", sendAmount,
@@ -810,7 +822,7 @@ func (p *Pump) submitCertTx(
 	baseRequired := fee + minSendAmount
 	inputs, change, err := p.wallet.SelectCoins(baseRequired)
 	if err != nil {
-		p.logger.Warn(
+		p.logger.Debug(
 			"coin selection failed",
 			"tx_type", txType,
 			"required_lovelace", baseRequired,
@@ -833,7 +845,7 @@ func (p *Pump) submitCertTx(
 			extraInputs, _, selectErr := p.wallet.SelectCoins(missingDeposit)
 			if selectErr != nil {
 				p.wallet.ReturnUTxOs(inputs)
-				p.logger.Warn(
+				p.logger.Debug(
 					"coin selection failed for registration deposit",
 					"tx_type", txType,
 					"required_lovelace", missingDeposit,
@@ -865,7 +877,7 @@ func (p *Pump) submitCertTx(
 	if submitErr != nil {
 		entry.Status = "rejected"
 		entry.ErrorMsg = submitErr.Error()
-		p.logger.Warn(
+		p.logger.Debug(
 			txType+" tx rejected",
 			"tx_id", txID,
 			"registration", deposit > 0,
@@ -879,7 +891,7 @@ func (p *Pump) submitCertTx(
 		p.wallet.ReturnUTxOs(inputs)
 	} else {
 		entry.Status = "submitted"
-		p.logger.Info(
+		p.logger.Debug(
 			txType+" tx submitted",
 			"tx_id", txID,
 			"registration", deposit > 0,
@@ -929,7 +941,7 @@ func (p *Pump) submitPlutusLock(client *NodeClient, batchSize int) bool {
 	required := plutusLockAmount + fee + minSendAmount
 	inputs, _, err := p.wallet.SelectCoins(required)
 	if err != nil {
-		p.logger.Warn(
+		p.logger.Debug(
 			"coin selection failed for plutus",
 			"kind", "plutus_lock",
 			"required_lovelace", required,
@@ -938,7 +950,7 @@ func (p *Pump) submitPlutusLock(client *NodeClient, batchSize int) bool {
 		return false
 	}
 	if len(inputs) == 0 {
-		p.logger.Warn(
+		p.logger.Debug(
 			"coin selection returned no inputs for plutus lock",
 			"required_lovelace", required,
 		)
@@ -988,7 +1000,7 @@ func (p *Pump) submitPlutusUnlock(client *NodeClient, batchSize int, locked UTxO
 		if err == nil {
 			p.wallet.ReturnUTxOs(collateral)
 		}
-		p.logger.Warn("no key-locked collateral for plutus unlock", "err", err)
+		p.logger.Debug("no key-locked collateral for plutus unlock", "err", err)
 		p.addLockedPlutusUTxO(locked)
 		return false
 	}
@@ -1062,9 +1074,9 @@ func (p *Pump) submitPlutusTx(
 	if submitErr != nil {
 		entry.Status = "rejected"
 		entry.ErrorMsg = submitErr.Error()
-		p.logger.Warn("plutus tx rejected", "kind", kind, "tx_id", txID, "err", submitErr)
+		p.logger.Debug("plutus tx rejected", "kind", kind, "tx_id", txID, "err", submitErr)
 	} else {
-		p.logger.Info("plutus tx submitted", "kind", kind, "tx_id", txID)
+		p.logger.Debug("plutus tx submitted", "kind", kind, "tx_id", txID)
 	}
 	if p.txlog != nil {
 		if logErr := p.txlog.Log(entry); logErr != nil {
