@@ -148,11 +148,24 @@ func TestVestingBeneficiaryWithdrawsAfterLock(t *testing.T) {
 
 	h.slot = vestingTestStart + vestingLockMinSlots + 1
 	tx := h.step(beneficiary, vestAdvance, 0)
+	require.Len(t, h.app.positions, 1, "accepted spend waits for reconciliation")
+	require.NoError(t, h.app.ReconcileSnapshot(nil, h.users, map[string]bool{tx.Hash().String(): false}))
 	require.Empty(t, h.app.positions)
 	require.Equal(t, h.slot, tx.ValidityIntervalStart())
 	require.Len(t, tx.RequiredSigners(), 1)
 	require.Equal(t, keyHash(beneficiary.Key), tx.RequiredSigners()[0].Bytes())
 	require.GreaterOrEqual(t, paidTo(tx, beneficiary.Key.Address), uint64(vestingAmountMin-1_000_000))
+}
+
+func TestVestingLockDeadlineMatchesTargetSlotWithSubMillisecondSlots(t *testing.T) {
+	h := newVestingHarness(t)
+	h.cfg.ScriptParams.SlotLength = 500 * time.Microsecond
+	h.cfg.ScriptParams.SystemStart = time.Unix(1_700_000_000, 250_000)
+	h.lock(h.users[0])
+
+	pos := h.app.positions[0]
+	want := slotMillis(h.cfg.ScriptParams, h.slot+vestingLockMinSlots)
+	require.Equal(t, want, pos.lockUntil)
 }
 
 func TestVestingBeneficiaryWaitsForLock(t *testing.T) {
@@ -166,6 +179,39 @@ func TestVestingBeneficiaryWaitsForLock(t *testing.T) {
 	h.step(beneficiary, vestAdvance, vestingAmountMin, vestLockSlots, 0)
 	require.Len(t, h.app.positions, 2)
 	require.True(t, h.app.positions[0].known != nil && !h.app.positions[0].busy)
+}
+
+func TestVestingReconstructsAndRestoresPendingPosition(t *testing.T) {
+	h := newVestingHarness(t)
+	h.lock(h.users[0])
+	locked := h.app.positions[0]
+	snapshot := UTxO{
+		TxHash: locked.utxo.TxHash, Index: locked.utxo.Index,
+		Amount: locked.utxo.Amount, Address: h.app.validator.Address(),
+		InlineDatum: append([]byte(nil), locked.known[0].Datum...),
+	}
+	restarted, err := newVestingApp()
+	require.NoError(t, err)
+	require.NoError(t, restarted.ReconcileSnapshot([]UTxO{snapshot}, h.users, nil))
+	require.Len(t, restarted.positions, 1, "startup recovers script positions")
+	require.Equal(t, locked.lockUntil, restarted.positions[0].lockUntil)
+	require.True(t, sameUser(locked.owner, restarted.positions[0].owner))
+	require.True(t, sameUser(locked.beneficiary, restarted.positions[0].beneficiary))
+
+	tx := h.step(h.users[0], vestAdvance, 0, vestClawback)
+	require.Len(t, h.app.positions, 1, "accepted spend is retained until confirmed")
+	require.Equal(t, tx.Hash().String(), h.app.positions[0].pendingSpend)
+	require.NoError(t, h.app.ReconcileSnapshot(
+		[]UTxO{snapshot}, h.users, map[string]bool{tx.Hash().String(): false},
+	))
+	require.Len(t, h.app.positions, 1, "a dropped spend restores its still-unspent input")
+	require.Empty(t, h.app.positions[0].pendingSpend)
+	require.False(t, h.app.positions[0].busy)
+
+	// The same absent transaction with no script input in the snapshot means
+	// the spend has reached the chain.
+	require.NoError(t, h.app.ReconcileSnapshot(nil, h.users, map[string]bool{tx.Hash().String(): false}))
+	require.Empty(t, h.app.positions)
 }
 
 // A lower bound equal to lock_until fails the validator, so the beneficiary
@@ -185,6 +231,7 @@ func TestVestingOwnerClawsBackBeforeLock(t *testing.T) {
 	owner := h.users[0]
 	h.lock(owner)
 	tx := h.step(owner, vestAdvance, 0, vestClawback)
+	require.NoError(t, h.app.ReconcileSnapshot(nil, h.users, map[string]bool{tx.Hash().String(): false}))
 	require.Empty(t, h.app.positions)
 	require.Equal(t, uint64(0), tx.ValidityIntervalStart(), "the owner path needs no validity bound")
 	require.Equal(t, keyHash(owner.Key), tx.RequiredSigners()[0].Bytes())
@@ -376,4 +423,23 @@ func TestVestingKeepsCollateralReservedUntilReconciled(t *testing.T) {
 	for _, u := range all {
 		require.NotEqual(t, ref, utxoKey(u))
 	}
+
+	pendingID := claw.Hash().String()
+	h.wallet.mu.Lock()
+	pending, ok := h.wallet.pending[pendingID]
+	h.wallet.mu.Unlock()
+	require.True(t, ok)
+	// The source collateral is still on chain after a successful script spend.
+	// Reconciliation retires the pending reservation and makes it selectable.
+	snapshot := append([]UTxO(nil), h.wallet.utxos...)
+	snapshot = append(snapshot, pending.inputs...)
+	h.wallet.ReconcileSnapshot(snapshot, map[string]bool{pendingID: false})
+	h.wallet.ReconcileSnapshot(snapshot, map[string]bool{pendingID: false})
+	all, _, err = h.wallet.SelectCoins(h.wallet.Balance())
+	require.NoError(t, err)
+	found := false
+	for _, u := range all {
+		found = found || utxoKey(u) == ref
+	}
+	require.True(t, found, "reconciliation releases unspent collateral")
 }

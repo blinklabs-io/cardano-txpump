@@ -15,10 +15,13 @@
 package txpump
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/blinklabs-io/plutigo/data"
 )
 
 func init() { RegisterApp("vesting", mustNewVestingApp()) }
@@ -70,8 +73,9 @@ type vestingPosition struct {
 	// transaction has had the confirmation window to reach the chain.
 	availableAt time.Time
 	// busy marks a position claimed by a step in progress.
-	busy       bool
-	rejections int
+	busy         bool
+	rejections   int
+	pendingSpend string
 }
 
 // vestingApp locks ADA for a beneficiary through the vesting template: the
@@ -134,7 +138,7 @@ func (a *vestingApp) Step(env *AppEnv) (bool, error) {
 	nowMs := slotMillis(params, env.Slot)
 	pos, action := a.claim(env.User, nowMs)
 	if pos == nil {
-		return a.lock(env, params, nowMs)
+		return a.lock(env, params)
 	}
 	return a.spend(env, params, pos, action)
 }
@@ -152,7 +156,7 @@ func (a *vestingApp) claim(user *User, nowMs int64) (*vestingPosition, vestingAc
 	now := a.now()
 	var claimable []*vestingPosition
 	for _, p := range a.positions {
-		if p.busy || now.Before(p.availableAt) {
+		if p.busy || p.pendingSpend != "" || now.Before(p.availableAt) {
 			continue
 		}
 		if sameUser(p.owner, user) || (sameUser(p.beneficiary, user) && nowMs > p.lockUntil) {
@@ -202,7 +206,140 @@ func (a *vestingApp) add(p *vestingPosition) {
 	a.positions = append(a.positions, p)
 }
 
-func (a *vestingApp) lock(env *AppEnv, params ScriptParams, nowMs int64) (bool, error) {
+// ReconcileSnapshot refreshes positions from the validator's current UTxOs.
+// A submitted spend remains reserved while it is in the mempool. If it
+// disappears while its input remains unspent, the position becomes claimable
+// again; if the input is gone, the spend is confirmed.
+func (a *vestingApp) ReconcileSnapshot(
+	snapshot []UTxO,
+	users []*User,
+	presence map[string]bool,
+) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	onChain := make(map[string]UTxO, len(snapshot))
+	for _, utxo := range snapshot {
+		onChain[utxoKey(utxo)] = utxo
+	}
+
+	positions := make([]*vestingPosition, 0, len(a.positions)+len(snapshot))
+	known := make(map[string]struct{}, len(a.positions)+len(snapshot))
+	for _, pos := range a.positions {
+		key := utxoKey(pos.utxo)
+		utxo, exists := onChain[key]
+		if pos.pendingSpend != "" {
+			if presence[pos.pendingSpend] {
+				pos.busy = false
+				positions = append(positions, pos)
+				known[key] = struct{}{}
+				continue
+			}
+			if !exists {
+				continue
+			}
+			pos.pendingSpend = ""
+			pos.busy = false
+		}
+		if !exists && !presence[pos.utxo.TxHash] {
+			continue
+		}
+		if exists {
+			pos.utxo = utxo
+		}
+		positions = append(positions, pos)
+		known[key] = struct{}{}
+	}
+
+	var decodeErr error
+	for _, utxo := range snapshot {
+		key := utxoKey(utxo)
+		if _, exists := known[key]; exists {
+			continue
+		}
+		pos, err := a.positionFromUTxO(utxo, users)
+		if err != nil {
+			if decodeErr == nil {
+				decodeErr = fmt.Errorf("vesting output %s: %w", key, err)
+			}
+			continue
+		}
+		if pos != nil {
+			positions = append(positions, pos)
+			known[key] = struct{}{}
+		}
+	}
+	a.positions = positions
+	return decodeErr
+}
+
+func (a *vestingApp) positionFromUTxO(
+	utxo UTxO,
+	users []*User,
+) (*vestingPosition, error) {
+	if len(utxo.InlineDatum) == 0 {
+		return nil, fmt.Errorf("missing inline datum")
+	}
+	decoded, err := data.Decode(utxo.InlineDatum)
+	if err != nil {
+		return nil, fmt.Errorf("decode datum: %w", err)
+	}
+	datum, ok := decoded.(*data.Constr)
+	if !ok || datum.Tag == nil || !datum.Tag.IsUint64() || datum.Tag.Uint64() != 0 || len(datum.Fields) != 3 {
+		return nil, fmt.Errorf("datum is not a vesting record")
+	}
+	lock, ok := datum.Fields[0].(*data.Integer)
+	if !ok || lock.Inner == nil || !lock.Inner.IsInt64() {
+		return nil, fmt.Errorf("invalid lock deadline")
+	}
+	ownerHash, ok := datum.Fields[1].(*data.ByteString)
+	if !ok || len(ownerHash.Inner) != 28 {
+		return nil, fmt.Errorf("invalid owner credential")
+	}
+	beneficiaryHash, ok := datum.Fields[2].(*data.ByteString)
+	if !ok || len(beneficiaryHash.Inner) != 28 {
+		return nil, fmt.Errorf("invalid beneficiary credential")
+	}
+	var owner, beneficiary *User
+	for _, user := range users {
+		if user == nil || user.Key == nil {
+			continue
+		}
+		credential := keyHash(user.Key)
+		if bytes.Equal(credential, ownerHash.Inner) {
+			owner = user
+		}
+		if bytes.Equal(credential, beneficiaryHash.Inner) {
+			beneficiary = user
+		}
+	}
+	if owner == nil || beneficiary == nil {
+		return nil, nil
+	}
+	known := KnownUTxO{
+		Ref:      utxoKey(utxo),
+		Address:  a.validator.Address(),
+		Lovelace: utxo.Amount,
+		Datum:    append([]byte(nil), utxo.InlineDatum...),
+	}
+	return &vestingPosition{
+		utxo:        utxo,
+		known:       []KnownUTxO{known},
+		owner:       owner,
+		beneficiary: beneficiary,
+		lovelace:    utxo.Amount,
+		lockUntil:   lock.Inner.Int64(),
+	}, nil
+}
+
+func (a *vestingApp) markPendingSpend(pos *vestingPosition, txID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	pos.pendingSpend = txID
+	pos.busy = false
+}
+
+func (a *vestingApp) lock(env *AppEnv, params ScriptParams) (bool, error) {
 	owner := env.User
 	var others []*User
 	for _, u := range env.Users {
@@ -217,7 +354,7 @@ func (a *vestingApp) lock(env *AppEnv, params ScriptParams, nowMs int64) (bool, 
 	amount := uint64(a.choose(vestingAmountMin, vestingAmountMax))
 	lockSlots := a.choose(vestingLockMinSlots, vestingLockMaxSlots)
 	beneficiary := others[a.choose(0, len(others)-1)]
-	lockUntil := nowMs + int64(lockSlots)*params.SlotLength.Milliseconds()
+	lockUntil := slotMillis(params, env.Slot+uint64(lockSlots))
 
 	inputs, change, err := env.Wallet.SelectCoinsForKey(owner.Key, amount+vestingFeeBudget)
 	if errors.Is(err, ErrInsufficientFunds) {
@@ -301,17 +438,17 @@ func (a *vestingApp) spend(env *AppEnv, params ScriptParams, pos *vestingPositio
 		a.settle(pos, false, true, false)
 		return false, fmt.Errorf("vesting %s: %w", action, err)
 	}
+	outs, err := KnownUTxOsFromTx(txBytes)
+	if err != nil {
+		env.Wallet.ReturnUTxOs(collateral)
+		a.settle(pos, false, true, false)
+		return false, err
+	}
 	if err := env.Submit("vesting", txID, txBytes); err != nil {
 		env.Wallet.ReturnUTxOs(collateral)
 		a.settle(pos, false, true, namesMissingInput(err, pos.utxo.TxHash))
 		env.Logger.Warn("tx rejected", "action", action.String(), "tx_id", txID, "err", err)
 		return false, nil
-	}
-	outs, err := KnownUTxOsFromTx(txBytes)
-	if err != nil {
-		env.Wallet.ReturnUTxOs(collateral)
-		a.settle(pos, true, false, false)
-		return false, err
 	}
 	// Collateral is not consumed, but it stays reserved with the pending
 	// transaction: spent elsewhere first, it would make a node reject this
@@ -320,7 +457,7 @@ func (a *vestingApp) spend(env *AppEnv, params ScriptParams, pos *vestingPositio
 	env.Wallet.RecordAccepted(txID, collateral, []UTxO{{
 		TxHash: txID, Index: 0, Amount: outs[0].Lovelace, SigningKey: actor.Key,
 	}}, env.Cfg.confirmationDelay())
-	a.settle(pos, true, false, false)
+	a.markPendingSpend(pos, txID)
 	env.Logger.Info("vesting step", "action", action.String(), "tx_id", txID)
 	return true, nil
 }
