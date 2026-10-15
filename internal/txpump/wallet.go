@@ -39,6 +39,10 @@ type UTxO struct {
 // hold enough ADA to cover the requested amount.
 var ErrInsufficientFunds = errors.New("wallet: insufficient funds")
 
+// ErrKeyReserved is returned when coins are requested for the reserved key
+// through a path other than SelectReservedCoins, or when no key is reserved.
+var ErrKeyReserved = errors.New("wallet: key is reserved")
+
 type pendingTx struct {
 	inputs, outputs []UTxO
 	absent          bool
@@ -52,6 +56,9 @@ type Wallet struct {
 	now       func() time.Time
 	addresses map[string]*UTxOKey
 	pending   map[string]pendingTx
+	// reserved is the address of the key held out of every user and coin
+	// selection path except SelectReservedCoins.
+	reserved []byte
 }
 
 // NewWallet returns an empty Wallet.
@@ -262,6 +269,48 @@ func (w *Wallet) Add(utxos ...UTxO) {
 	w.utxos = append(w.utxos, utxos...)
 }
 
+// ReserveKey holds key out of the user list and out of every coin selection
+// except SelectReservedCoins, so that traffic never spends its outputs.
+func (w *Wallet) ReserveKey(key *UTxOKey) {
+	if key == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.reserved = append([]byte(nil), key.Address...)
+}
+
+// isReserved reports whether u is controlled by the reserved key. The caller
+// holds w.mu.
+func (w *Wallet) isReserved(u UTxO) bool {
+	if len(w.reserved) == 0 {
+		return false
+	}
+	return (u.SigningKey != nil && bytes.Equal(u.SigningKey.Address, w.reserved)) ||
+		bytes.Equal(u.Address, w.reserved)
+}
+
+// ReservedKey returns the reserved key, or nil.
+func (w *Wallet) ReservedKey() *UTxOKey {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.reserved) == 0 {
+		return nil
+	}
+	return w.addresses[string(w.reserved)]
+}
+
+// SelectReservedCoins is SelectCoins restricted to the reserved key.
+func (w *Wallet) SelectReservedCoins(targetAmount uint64) ([]UTxO, uint64, error) {
+	w.mu.Lock()
+	reserved := len(w.reserved) > 0
+	w.mu.Unlock()
+	if !reserved {
+		return nil, 0, ErrKeyReserved
+	}
+	return w.selectCoins(targetAmount, func(u UTxO) bool { return w.isReserved(u) }, true)
+}
+
 // AddKey registers a signing key without any UTxO, so a key that holds no
 // funds yet is still a user, can be paid, and has its address queried for
 // UTxOs.
@@ -316,10 +365,11 @@ func (w *Wallet) Len() int {
 // targetAmount). Returns ErrInsufficientFunds if the wallet cannot cover the
 // target.
 func (w *Wallet) SelectCoins(targetAmount uint64) ([]UTxO, uint64, error) {
-	return w.selectCoins(targetAmount, nil)
+	return w.selectCoins(targetAmount, nil, false)
 }
 
-// Keys returns the distinct signing keys held by the wallet, ordered by
+// Keys returns the distinct signing keys held by the wallet, except the
+// reserved one, ordered by
 // address so a seeded run picks users in a stable order.
 func (w *Wallet) Keys() []*UTxOKey {
 	w.mu.Lock()
@@ -327,6 +377,9 @@ func (w *Wallet) Keys() []*UTxOKey {
 	w.ensureMaps()
 	keys := make([]*UTxOKey, 0, len(w.addresses))
 	for _, k := range w.addresses {
+		if len(w.reserved) > 0 && bytes.Equal(k.Address, w.reserved) {
+			continue
+		}
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool {
@@ -345,17 +398,25 @@ func (w *Wallet) SelectCoinsForKey(
 	if key == nil {
 		return nil, 0, errors.New("wallet: nil key")
 	}
+	w.mu.Lock()
+	reserved := len(w.reserved) > 0 && bytes.Equal(key.Address, w.reserved)
+	w.mu.Unlock()
+	if reserved {
+		return nil, 0, ErrKeyReserved
+	}
 	return w.selectCoins(targetAmount, func(u UTxO) bool {
 		return u.SigningKey != nil &&
 			bytes.Equal(u.SigningKey.Address, key.Address)
-	})
+	}, false)
 }
 
 // selectCoins implements largest-first selection over the UTxOs accepted by
-// keep; a nil keep accepts every available UTxO.
+// keep; a nil keep accepts every available UTxO. Reserved-key UTxOs are
+// skipped unless includeReserved.
 func (w *Wallet) selectCoins(
 	targetAmount uint64,
 	keep func(UTxO) bool,
+	includeReserved bool,
 ) ([]UTxO, uint64, error) {
 	if targetAmount == 0 {
 		return nil, 0, nil
@@ -368,6 +429,9 @@ func (w *Wallet) selectCoins(
 	now := w.currentTime()
 	sorted := make([]UTxO, 0, len(w.utxos))
 	for _, utxo := range w.utxos {
+		if !includeReserved && w.isReserved(utxo) {
+			continue
+		}
 		if w.isAvailable(utxo, now) && (keep == nil || keep(utxo)) {
 			sorted = append(sorted, utxo)
 		}
