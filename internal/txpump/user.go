@@ -33,3 +33,23 @@ func usersFromWallet(w *Wallet) []*User {
 	}
 	return users
 }
+
+// SelectUserKeys returns the keys at the given positions, in position order.
+// A nil selection keeps every key; a position past the end is an error, so a
+// stale setting cannot silently shrink the user set.
+func SelectUserKeys(keys []*UTxOKey, indexes []int) ([]*UTxOKey, error) {
+	if indexes == nil {
+		return keys, nil
+	}
+	out := make([]*UTxOKey, 0, len(indexes))
+	for _, i := range indexes {
+		if i < 0 || i >= len(keys) {
+			return nil, fmt.Errorf(
+				"TXPUMP_USERS: index %d out of range, %d keys loaded",
+				i, len(keys),
+			)
+		}
+		out = append(out, keys[i])
+	}
+	return out, nil
+}

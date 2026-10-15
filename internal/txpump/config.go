@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -64,6 +65,11 @@ type Config struct {
 	// Recognised values: "payment", "delegation", "governance", "plutus".
 	// Default: ["payment","delegation","governance","plutus"]
 	Types []string
+
+	// Users restricts the loaded signing keys this instance uses to these
+	// zero-based positions in the sorted genesis.<n>.skey file list. Nil keeps
+	// every key. Instances given disjoint sets never spend each other's UTxOs.
+	Users []int
 
 	// TransactionEra selects the era used for payment transaction encoding.
 	// Conway supports all transaction types; Dijkstra currently supports
@@ -217,6 +223,14 @@ func LoadConfig() (*Config, error) {
 
 	if v := os.Getenv("TXPUMP_TYPES"); v != "" {
 		cfg.Types = splitComma(v)
+	}
+
+	if v := os.Getenv("TXPUMP_USERS"); v != "" {
+		users, err := parseUserIndexes(v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Users = users
 	}
 
 	// Load genesis config if provided. Genesis values override defaults
@@ -405,4 +419,53 @@ func decodeConfiguredHash(
 		)
 	}
 	return decoded, nil
+}
+
+// maxUserIndex bounds a range so a typo such as "0-99999999999" cannot
+// allocate an enormous slice before the key count is known.
+const maxUserIndex = 65535
+
+// parseUserIndexes parses a comma-separated list of indexes and inclusive
+// ranges such as "0,2-3" into a sorted, de-duplicated slice.
+func parseUserIndexes(value string) ([]int, error) {
+	seen := map[int]struct{}{}
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		lo, hi, isRange := strings.Cut(part, "-")
+		first, err := parseUserIndex(value, lo)
+		if err != nil {
+			return nil, err
+		}
+		last := first
+		if isRange {
+			if last, err = parseUserIndex(value, hi); err != nil {
+				return nil, err
+			}
+			if last < first {
+				return nil, fmt.Errorf(
+					"TXPUMP_USERS: range %q is reversed in %q", part, value,
+				)
+			}
+		}
+		for i := first; i <= last; i++ {
+			seen[i] = struct{}{}
+		}
+	}
+	out := make([]int, 0, len(seen))
+	for i := range seen {
+		out = append(out, i)
+	}
+	sort.Ints(out)
+	return out, nil
+}
+
+func parseUserIndex(value, s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 || n > maxUserIndex {
+		return 0, fmt.Errorf(
+			"TXPUMP_USERS: %q in %q must be an integer from 0 to %d",
+			s, value, maxUserIndex,
+		)
+	}
+	return n, nil
 }

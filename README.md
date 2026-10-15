@@ -38,6 +38,14 @@ Each genesis signing key is one user. Registered apps such as `peer_payment`
 run as a randomly chosen user each time; `payment` and the other core types
 continue to draw from the whole wallet.
 
+`TXPUMP_USERS` limits an instance to some of the loaded keys, so several
+instances sharing one devnet can use disjoint keys and never spend the same
+UTxOs. It takes zero-based positions and inclusive ranges, such as `0,2-3`,
+into the `genesis.<n>.skey` files sorted by file name (so `genesis.10` sorts
+before `genesis.2`). UTxOs of unselected keys are ignored for every type.
+Startup fails on a malformed value or a position past the last key. Apps that
+need several users, such as `peer_payment`, count only the selected ones.
+
 Submitted and rejected transactions are reported as JSON logs and appended to
 `$TXPUMP_LOG_DIR/txpump.log` (default `/logs/txpump.log`).
 
@@ -120,6 +128,7 @@ cannot find spendable UTxOs matched to signing keys.
 | `TXPUMP_GENESIS_UTXO_FILE` | unset | Initial UTxOs and the directory containing their signing keys. Required for a funded run. |
 | `TXPUMP_GENESIS_FILE` | unset | Testnet spec or Shelley genesis JSON for epoch, slot, and system-start parameters. YAML specs need a resolved `systemStartUnix`. |
 | `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types: the four core types plus registered apps (`peer_payment`). |
+| `TXPUMP_USERS` | unset (all keys) | Signing keys this instance uses, as positions or ranges such as `0,2-3`. |
 | `TXPUMP_TRANSACTION_ERA` | `conway` | `conway` supports all workload types; `dijkstra` supports payments only. |
 | `TXPUMP_TX_COUNT_MIN` / `TXPUMP_TX_COUNT_MAX` | `1` / `10` | Minimum and maximum transactions per batch. |
 | `TXPUMP_COOLDOWN_MIN` / `TXPUMP_COOLDOWN_MAX` | `500` / `2000` | Minimum and maximum delay between batches, in milliseconds. |

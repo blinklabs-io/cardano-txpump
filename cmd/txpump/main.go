@@ -75,6 +75,11 @@ func main() {
 			logger.Error("no genesis signing keys found; txpump requires spendable keys")
 			os.Exit(1)
 		}
+		signingKeys, keyErr = txpump.SelectUserKeys(signingKeys, cfg.Users)
+		if keyErr != nil {
+			logger.Error("failed to select users", "err", keyErr)
+			os.Exit(1)
+		}
 		keysByAddress := make(map[string]*txpump.UTxOKey, len(signingKeys))
 		keysByHash := make(map[string]*txpump.UTxOKey, len(signingKeys))
 		for _, signingKey := range signingKeys {
