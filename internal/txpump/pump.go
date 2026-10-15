@@ -38,6 +38,9 @@ type Pump struct {
 	pendingPlutusUnlocks map[string]pendingPlutusUnlock
 	// users are the identities registered apps act as, one per wallet key.
 	users []*User
+	// primaryDown records that the last primary dial failed, so an outage is
+	// logged once when it starts and once when it ends rather than per batch.
+	primaryDown bool
 	// Credentials (hex key hashes) txpump has registered as stake keys and
 	// DReps, mapped to when the registration is expected on chain, so later
 	// certificates skip the registration deposit.
@@ -140,7 +143,15 @@ func (p *Pump) Run(ctx context.Context) error {
 			if !ready && startupExpired(startup, startupDeadline) {
 				return p.readinessTimeoutError()
 			}
-			p.logger.Error(
+			level := slog.LevelDebug
+			firstFailure := !p.primaryDown
+			if firstFailure {
+				level = slog.LevelError
+				p.primaryDown = true
+			}
+			p.logger.Log(
+				ctx,
+				level,
 				"failed to connect to primary node, trying fallback",
 				"primary", p.cfg.NodeAddr,
 				"err", err,
@@ -151,7 +162,13 @@ func (p *Pump) Run(ctx context.Context) error {
 			}
 			client, err = p.dialFallback(dialLimit)
 			if err != nil {
-				p.logger.Error(
+				fallbackLevel := slog.LevelDebug
+				if firstFailure {
+					fallbackLevel = slog.LevelError
+				}
+				p.logger.Log(
+					ctx,
+					fallbackLevel,
 					"fallback connection also failed, skipping batch",
 					"fallback", p.cfg.FallbackAddr,
 					"err", err,
@@ -162,6 +179,10 @@ func (p *Pump) Run(ctx context.Context) error {
 				continue
 			}
 			onFallback = true
+		}
+		if !onFallback && p.primaryDown {
+			p.primaryDown = false
+			p.logger.Info("primary node connection restored", "primary", p.cfg.NodeAddr)
 		}
 		if !ready && startupExpired(startup, startupDeadline) {
 			client.Close() //nolint:errcheck // best-effort close

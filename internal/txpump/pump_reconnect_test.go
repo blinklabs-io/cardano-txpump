@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,4 +178,36 @@ func TestRunBatchStopsOnceTheConnectionFails(t *testing.T) {
 	lines := bytes.Split(bytes.TrimSpace(raw), []byte("\n"))
 	require.Len(t, lines, 1, "the batch must stop at the first transport failure")
 	require.Contains(t, string(lines[0]), `"status":"error"`)
+}
+
+// A node that stays down is reported once when the outage starts and once
+// when it ends; the retries in between do not each log an error.
+func TestRunLogsAPrimaryOutageOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var buf bytes.Buffer
+	pump := reconnectPump(&Config{StartupTimeout: 0})
+	pump.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	const downDials = 25
+	dials := 0
+	pump.dialPrimaryFn = func() (*NodeClient, error) {
+		dials++
+		if dials <= downDials {
+			return nil, errors.New("connection refused")
+		}
+		return &NodeClient{addr: "primary"}, nil
+	}
+	pump.cooldownFn = func(context.Context) bool { return true }
+	pump.runBatchFn = func(context.Context, *NodeClient, int) int {
+		cancel()
+		return 1
+	}
+
+	require.ErrorIs(t, pump.Run(ctx), context.Canceled)
+	out := buf.String()
+	require.Equal(
+		t, 1,
+		strings.Count(out, "level=ERROR msg=\"failed to connect to primary node"),
+	)
+	require.Equal(t, 1, strings.Count(out, "primary node connection restored"))
 }
