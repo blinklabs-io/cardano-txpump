@@ -487,9 +487,6 @@ func (p *Pump) runBatch(
 	active := enabledTypes(
 		p.cfg.Types, epoch, p.cfg.delegationEnabled(), len(p.users),
 	)
-	if len(active) == 0 {
-		return 0
-	}
 
 	submitted := 0
 	attempted := 0
@@ -503,6 +500,9 @@ func (p *Pump) runBatch(
 			"node", client.Addr(),
 		)
 	}()
+	if len(active) == 0 {
+		return 0
+	}
 	for i := 0; i < batchSize; i++ {
 		select {
 		case <-ctx.Done():

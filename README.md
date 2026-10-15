@@ -47,9 +47,9 @@ continue to draw from the whole wallet.
 Submitted and rejected transactions are reported as JSON logs and appended to
 `$TXPUMP_LOG_DIR/txpump.log` (default `/logs/txpump.log`).
 
-Standard output carries one `batch` line per batch at the default `info` level;
-per-transaction detail is in `txpump.log` and, set `TXPUMP_LOG_LEVEL=debug`, on
-standard output. The level is one of `debug`, `info`, `warn` or `error`.
+Each batch that runs logs one `batch` line at the default `info` level;
+per-transaction detail is in `txpump.log` and, with `TXPUMP_LOG_LEVEL=debug`, on
+standard output. Connection and reconciliation problems are logged on their own. The level is one of `debug`, `info`, `warn` or `error`.
 
 ## Run locally
 

@@ -56,6 +56,24 @@ func TestBatchLogsOneInfoLineNotOnePerTransaction(t *testing.T) {
 	require.Contains(t, lines[0], `"attempted"`)
 }
 
+// A batch with no enabled type still logs its summary, so an idle pump is
+// visible at the default level.
+func TestBatchWithNoEnabledTypeStillLogsASummary(t *testing.T) {
+	var buf bytes.Buffer
+	pump := NewPump(
+		&Config{TxCountMin: 1, TxCountMax: 1},
+		NewWallet(),
+		slog.New(slog.NewJSONHandler(&buf, nil)),
+		nil,
+		time.Now().Add(-time.Second),
+	)
+
+	pump.runBatch(context.Background(), &NodeClient{addr: "node"}, 5)
+
+	require.Contains(t, buf.String(), `"msg":"batch"`)
+	require.Contains(t, buf.String(), `"attempted":0`)
+}
+
 func TestParseLogLevel(t *testing.T) {
 	for in, want := range map[string]slog.Level{
 		"":      slog.LevelInfo,
@@ -68,6 +86,8 @@ func TestParseLogLevel(t *testing.T) {
 		require.NoError(t, err, in)
 		require.Equal(t, want, got, in)
 	}
-	_, err := ParseLogLevel("loud")
-	require.Error(t, err)
+	for _, bad := range []string{"loud", "warning"} {
+		_, err := ParseLogLevel(bad)
+		require.Error(t, err, bad)
+	}
 }
