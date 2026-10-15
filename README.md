@@ -33,6 +33,12 @@ The workload types exercise different ledger paths:
   model to unlock outputs.
 - `peer_payment` pays ADA from one genesis-keyed user to another, so outputs
   change owner. It does nothing when the wallet holds a single key.
+- `escrow` has two users trade ADA through the cardano-templates escrow
+  validator: one initiates, another deposits, then both complete the trade or
+  either cancels. It needs at least two keys and the Plutus V3 cost model, and
+  runs from epoch 3. Every script transaction is planned from measured
+  execution units and checked offline against the Conway ledger rules and the
+  Plutus evaluator; a transaction that fails that check is not submitted.
 
 Each genesis signing key is one user. Registered apps such as `peer_payment`
 run as a randomly chosen user each time; `payment` and the other core types
@@ -129,7 +135,7 @@ cannot find spendable UTxOs matched to signing keys.
 | `TXPUMP_NETWORK_MAGIC` | `42` | Network magic; read from `TXPUMP_GENESIS_FILE` when unset. |
 | `TXPUMP_GENESIS_UTXO_FILE` | unset | Initial UTxOs and the directory containing their signing keys. Required for a funded run. |
 | `TXPUMP_GENESIS_FILE` | unset | Testnet spec or Shelley genesis JSON for epoch, slot, and system-start parameters. YAML specs need a resolved `systemStartUnix`. |
-| `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types: the four core types plus registered apps (`peer_payment`). |
+| `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types: the four core types plus registered apps (`peer_payment`, `escrow`). |
 | `TXPUMP_USERS` | unset (all keys) | Signing keys this instance uses, as positions or ranges such as `0,2-3`. |
 | `TXPUMP_TRANSACTION_ERA` | `conway` | `conway` supports all workload types; `dijkstra` supports payments only. |
 | `TXPUMP_TX_COUNT_MIN` / `TXPUMP_TX_COUNT_MAX` | `1` / `10` | Minimum and maximum transactions per batch. |
@@ -137,6 +143,8 @@ cannot find spendable UTxOs matched to signing keys.
 | `TXPUMP_CONFIRMATION_SLOTS` | `30` | Slots to wait before reusing newly created outputs. |
 | `TXPUMP_STARTUP_TIMEOUT` | `60` | Seconds allowed for startup, including waiting for genesis, establishing a connection, and submitting the first transaction; `0` disables the deadline. |
 | `TXPUMP_LOG_DIR` | `/logs` | Directory for structured transaction logs. |
+| `TXPUMP_CONWAY_GENESIS_FILE` | unset | Conway genesis supplying the Plutus V3 cost model. |
+| `TXPUMP_ALONZO_GENESIS_FILE` | unset | Alonzo genesis supplying execution prices, the execution-unit limit and collateral settings for script apps. |
 
 Delegation workloads need a pool key hash. The container entrypoint can derive
 it from `/configs/keys/cold.vkey`; otherwise set
@@ -146,5 +154,25 @@ model is loaded. If this file is configured but unreadable or invalid, startup
 fails. `TXPUMP_FALLBACK_ADDR` can name a second N2C address to try when the
 primary address fails.
 
+Script apps build and check their transactions against mainnet-like Conway
+parameters. `TXPUMP_ALONZO_GENESIS_FILE`, when set, overrides the execution
+prices, the per-transaction execution-unit limit and the collateral settings
+with the network's Alonzo genesis values. The fee coefficients are not read
+from genesis and stay at 44 lovelace per byte plus 155381.
+
 See [`internal/txpump/config.go`](internal/txpump/config.go) for all supported
 variables and validation rules.
+
+## Template blueprints
+
+Script apps embed compiled CIP-57 blueprints from
+[cardano-templates](https://github.com/cardano-foundation/cardano-templates)
+under `internal/txpump/blueprints/`. To regenerate them, put Aiken v1.1.22 on
+`PATH`, check out cardano-templates at the commit pinned in the `Makefile`
+(`TEMPLATES_COMMIT`), and run:
+
+```sh
+make blueprints TEMPLATES_DIR=<path to the cardano-templates checkout>
+```
+
+The loader rejects a blueprint whose stated hash does not match its code.

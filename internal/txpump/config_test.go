@@ -61,6 +61,31 @@ func TestLoadConfig_LoadsGenesisSystemStartUnix(t *testing.T) {
 	require.Equal(t, int64(1700000000), cfg.SystemStartUnix)
 }
 
+func TestLoadConfig_ScriptParams(t *testing.T) {
+	clearTxpumpEnv(t)
+	dir := t.TempDir()
+	genesisPath := filepath.Join(dir, "testnet.yaml")
+	require.NoError(t, os.WriteFile(genesisPath, []byte(testGenesisConfigYAML), 0o644))
+	t.Setenv("TXPUMP_GENESIS_FILE", genesisPath)
+
+	cfg, err := LoadConfig()
+	require.NoError(t, err)
+	require.Equal(t, uint(150), cfg.ScriptParams.CollateralPercentage, "defaults without an Alonzo genesis")
+	require.Equal(t, time.Unix(1700000000, 0), cfg.ScriptParams.SystemStart)
+	require.Equal(t, time.Second, cfg.ScriptParams.SlotLength)
+
+	alonzoPath := filepath.Join(dir, "alonzo-genesis.json")
+	require.NoError(t, os.WriteFile(alonzoPath, []byte(`{"collateralPercentage":200}`), 0o644))
+	t.Setenv("TXPUMP_ALONZO_GENESIS_FILE", alonzoPath)
+	cfg, err = LoadConfig()
+	require.NoError(t, err)
+	require.Equal(t, uint(200), cfg.ScriptParams.CollateralPercentage)
+
+	t.Setenv("TXPUMP_ALONZO_GENESIS_FILE", filepath.Join(dir, "missing.json"))
+	_, err = LoadConfig()
+	require.Error(t, err)
+}
+
 // TestConfigConfirmationDelay verifies that the output-quarantine duration is
 // derived from confirmation slots and the genesis slot length, and that zero
 // confirmation slots preserve the explicitly requested immediate behavior.
@@ -183,6 +208,7 @@ func clearTxpumpEnv(t *testing.T) {
 		"TXPUMP_GENESIS_UTXO_FILE",
 		"TXPUMP_GENESIS_FILE",
 		"TXPUMP_CONWAY_GENESIS_FILE",
+		"TXPUMP_ALONZO_GENESIS_FILE",
 		"TXPUMP_DELEGATION_POOL_KEY_HASH",
 	} {
 		t.Setenv(key, "")
