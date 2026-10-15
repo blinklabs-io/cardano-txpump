@@ -160,7 +160,10 @@ func stubFor(known []KnownUTxO, p ScriptParams) (*stubLedger, error) {
 		if !ok {
 			return nil, fmt.Errorf("known utxo %q: missing #index", k.Ref)
 		}
-		idx, err := strconv.ParseUint(idxStr, 10, 32)
+		idx, err := strconv.ParseInt(idxStr, 10, 32)
+		if err == nil && idx < 0 {
+			err = errors.New("negative index")
+		}
 		if err != nil {
 			return nil, fmt.Errorf("known utxo %q: %w", k.Ref, err)
 		}

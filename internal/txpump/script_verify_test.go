@@ -168,3 +168,16 @@ func TestVerifierEvaluationPanicFailsClosed(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+func TestStubForRejectsAnUnusableOutputIndex(t *testing.T) {
+	hash := strings.Repeat("ab", 32)
+	for _, idx := range []string{"-1", "4294967296", "x", ""} {
+		_, err := stubFor(
+			[]KnownUTxO{{Ref: hash + "#" + idx, Lovelace: 1}},
+			ScriptParams{},
+		)
+		if err == nil {
+			t.Errorf("index %q: want an error", idx)
+		}
+	}
+}
