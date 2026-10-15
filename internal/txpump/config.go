@@ -326,18 +326,15 @@ func (c *Config) validate() error {
 			c.TransactionEra,
 		)
 	}
-	validTypes := map[string]bool{
-		"payment":    true,
-		"delegation": true,
-		"governance": true,
-		"plutus":     true,
-	}
 	for _, t := range c.Types {
-		if !validTypes[t] {
+		if _, isApp := lookupApp(t); !coreTypes[t] && !isApp {
+			valid := append(
+				[]string{"payment", "delegation", "governance", "plutus"},
+				registeredAppNames()...,
+			)
 			return fmt.Errorf(
-				"unknown transaction type: %q "+
-					"(valid: payment, delegation, governance, plutus)",
-				t,
+				"unknown transaction type: %q (valid: %s)",
+				t, strings.Join(valid, ", "),
 			)
 		}
 	}

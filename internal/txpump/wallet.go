@@ -15,6 +15,7 @@
 package txpump
 
 import (
+	"bytes"
 	"errors"
 	"math"
 	"sort"
@@ -261,6 +262,19 @@ func (w *Wallet) Add(utxos ...UTxO) {
 	w.utxos = append(w.utxos, utxos...)
 }
 
+// AddKey registers a signing key without any UTxO, so a key that holds no
+// funds yet is still a user, can be paid, and has its address queried for
+// UTxOs.
+func (w *Wallet) AddKey(key *UTxOKey) {
+	if key == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.ensureMaps()
+	w.addresses[string(key.Address)] = key
+}
+
 // Balance returns the total lovelace held by the wallet.
 // If the sum would overflow uint64, math.MaxUint64 is returned.
 func (w *Wallet) Balance() uint64 {
@@ -302,6 +316,47 @@ func (w *Wallet) Len() int {
 // targetAmount). Returns ErrInsufficientFunds if the wallet cannot cover the
 // target.
 func (w *Wallet) SelectCoins(targetAmount uint64) ([]UTxO, uint64, error) {
+	return w.selectCoins(targetAmount, nil)
+}
+
+// Keys returns the distinct signing keys held by the wallet, ordered by
+// address so a seeded run picks users in a stable order.
+func (w *Wallet) Keys() []*UTxOKey {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.ensureMaps()
+	keys := make([]*UTxOKey, 0, len(w.addresses))
+	for _, k := range w.addresses {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return bytes.Compare(keys[i].Address, keys[j].Address) < 0
+	})
+	return keys
+}
+
+// SelectCoinsForKey is SelectCoins restricted to UTxOs controlled by key.
+// Mixing keys would put another user's inputs in the transaction without a
+// matching witness, so the node would reject it.
+func (w *Wallet) SelectCoinsForKey(
+	key *UTxOKey,
+	targetAmount uint64,
+) ([]UTxO, uint64, error) {
+	if key == nil {
+		return nil, 0, errors.New("wallet: nil key")
+	}
+	return w.selectCoins(targetAmount, func(u UTxO) bool {
+		return u.SigningKey != nil &&
+			bytes.Equal(u.SigningKey.Address, key.Address)
+	})
+}
+
+// selectCoins implements largest-first selection over the UTxOs accepted by
+// keep; a nil keep accepts every available UTxO.
+func (w *Wallet) selectCoins(
+	targetAmount uint64,
+	keep func(UTxO) bool,
+) ([]UTxO, uint64, error) {
 	if targetAmount == 0 {
 		return nil, 0, nil
 	}
@@ -313,7 +368,7 @@ func (w *Wallet) SelectCoins(targetAmount uint64) ([]UTxO, uint64, error) {
 	now := w.currentTime()
 	sorted := make([]UTxO, 0, len(w.utxos))
 	for _, utxo := range w.utxos {
-		if w.isAvailable(utxo, now) {
+		if w.isAvailable(utxo, now) && (keep == nil || keep(utxo)) {
 			sorted = append(sorted, utxo)
 		}
 	}

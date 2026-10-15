@@ -114,6 +114,7 @@ func main() {
 				"signing key loaded",
 				"address", hex.EncodeToString(signingKey.Address),
 			)
+			wallet.AddKey(signingKey)
 		}
 
 		wallet.Add(utxos...)

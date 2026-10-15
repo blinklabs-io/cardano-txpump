@@ -36,6 +36,8 @@ type Pump struct {
 	genesisTime          time.Time
 	plutusLocked         []UTxO
 	pendingPlutusUnlocks map[string]pendingPlutusUnlock
+	// users are the identities registered apps act as, one per wallet key.
+	users []*User
 	// Credentials (hex key hashes) txpump has registered as stake keys and
 	// DReps, mapped to when the registration is expected on chain, so later
 	// certificates skip the registration deposit.
@@ -82,6 +84,9 @@ func NewPump(
 //  3. Submits the batch, one transaction at a time.
 //  4. Waits a random cooldown in [CooldownMin, CooldownMax] milliseconds.
 func (p *Pump) Run(ctx context.Context) error {
+	if p.users == nil && p.wallet != nil {
+		p.users = usersFromWallet(p.wallet)
+	}
 	var startupTimer *time.Timer
 	var startup <-chan time.Time
 	var startupDeadline time.Time
@@ -381,6 +386,7 @@ func (p *Pump) hasEnabledTypes() bool {
 		p.cfg.Types,
 		p.epochFromSlot(p.currentSlot()),
 		p.cfg.delegationEnabled(),
+		len(p.users),
 	)) > 0
 }
 
@@ -422,6 +428,7 @@ func enabledTypes(
 	types []string,
 	epoch uint64,
 	delegationEnabled bool,
+	users int,
 ) []string {
 	var enabled []string
 	for _, t := range types {
@@ -438,6 +445,10 @@ func enabledTypes(
 			}
 		case "plutus":
 			if epoch >= 3 {
+				enabled = append(enabled, t)
+			}
+		default:
+			if app, ok := lookupApp(t); ok && appEnabled(app, users) {
 				enabled = append(enabled, t)
 			}
 		}
@@ -473,7 +484,9 @@ func (p *Pump) runBatch(
 	}
 	slot := p.currentSlot()
 	epoch := p.epochFromSlot(slot)
-	active := enabledTypes(p.cfg.Types, epoch, p.cfg.delegationEnabled())
+	active := enabledTypes(
+		p.cfg.Types, epoch, p.cfg.delegationEnabled(), len(p.users),
+	)
 	if len(active) == 0 {
 		return 0
 	}
@@ -505,13 +518,85 @@ func (p *Pump) runBatch(
 				submitted++
 			}
 		default:
-			p.logger.Warn(
-				"unknown tx type in config, skipping",
-				"type", txType,
-			)
+			app, ok := lookupApp(txType)
+			if !ok {
+				p.logger.Warn(
+					"unknown tx type in config, skipping",
+					"type", txType,
+				)
+				continue
+			}
+			if p.runApp(client, batchSize, txType, app) {
+				submitted++
+			}
 		}
 	}
 	return submitted
+}
+
+// runApp runs one step of a registered app as a randomly chosen user.
+func (p *Pump) runApp(
+	client *NodeClient,
+	batchSize int,
+	name string,
+	app App,
+) bool {
+	if len(p.users) == 0 {
+		return false
+	}
+	user := p.users[IntRange(0, len(p.users)-1)]
+	env := &AppEnv{
+		User:   user,
+		Users:  p.users,
+		Wallet: p.wallet,
+		Cfg:    p.cfg,
+		Slot:   p.currentSlot(),
+		Logger: p.logger.With("app", name, "user", user.ID),
+		Submit: func(txType, txID string, txBytes []byte) error {
+			return p.submitAppTx(client, batchSize, txType, txID, txBytes)
+		},
+	}
+	submitted, err := app.Step(env)
+	if err != nil {
+		p.logger.Error(
+			"app step failed", "app", name, "user", user.ID, "err", err,
+		)
+		return false
+	}
+	return submitted
+}
+
+// submitAppTx submits an app-built transaction and appends it to the
+// transaction log. It returns the node's rejection, if any.
+func (p *Pump) submitAppTx(
+	client *NodeClient,
+	batchSize int,
+	txType, txID string,
+	txBytes []byte,
+) error {
+	eraID := conwayEraID
+	if p.cfg.TransactionEra == "dijkstra" {
+		eraID = dijkstraEraID
+	}
+	submitErr := client.SubmitTx(eraID, txBytes)
+	entry := TxLog{
+		TxID:      txID,
+		TxType:    txType,
+		EraID:     eraID,
+		NodeAddr:  client.Addr(),
+		BatchSize: batchSize,
+		Status:    "submitted",
+	}
+	if submitErr != nil {
+		entry.Status = "rejected"
+		entry.ErrorMsg = submitErr.Error()
+	}
+	if p.txlog != nil {
+		if logErr := p.txlog.Log(entry); logErr != nil {
+			p.logger.Error("txlog write failed", "err", logErr)
+		}
+	}
+	return submitErr
 }
 
 // submitPayment builds and submits a single payment transaction.
