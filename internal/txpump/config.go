@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"os"
 	"strconv"
 	"strings"
@@ -110,6 +111,15 @@ type Config struct {
 	// Conway genesis named by TXPUMP_CONWAY_GENESIS_FILE. Plutus unlocks
 	// commit to it in their script data hash and are skipped without it.
 	PlutusV3CostModel []int64
+
+	// AlonzoGenesisFile is the Alonzo genesis named by
+	// TXPUMP_ALONZO_GENESIS_FILE. Its execution prices, execution-unit
+	// limit and collateral settings override the ScriptParams defaults.
+	AlonzoGenesisFile string
+
+	// ScriptParams are the protocol parameters script apps build and verify
+	// transactions against.
+	ScriptParams ScriptParams
 }
 
 // LoadConfig reads configuration from environment variables and returns a
@@ -254,11 +264,107 @@ func LoadConfig() (*Config, error) {
 		cfg.PlutusV3CostModel = costModel
 	}
 
+	cfg.ScriptParams = DefaultScriptParams(cfg.PlutusV3CostModel)
+	cfg.ScriptParams.SlotLength = cfg.SlotLength
+	if cfg.SystemStartUnix != 0 {
+		cfg.ScriptParams.SystemStart = time.Unix(cfg.SystemStartUnix, 0)
+	}
+	cfg.AlonzoGenesisFile = envString("TXPUMP_ALONZO_GENESIS_FILE", "")
+	if cfg.AlonzoGenesisFile != "" {
+		params, loadErr := loadAlonzoScriptParams(cfg.AlonzoGenesisFile, cfg.ScriptParams)
+		if loadErr != nil {
+			return nil, fmt.Errorf("TXPUMP_ALONZO_GENESIS_FILE: %w", loadErr)
+		}
+		cfg.ScriptParams = params
+	}
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+// loadAlonzoScriptParams overlays the script parameters present in an Alonzo
+// genesis file on base; absent fields keep base's values.
+func loadAlonzoScriptParams(path string, base ScriptParams) (ScriptParams, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // trusted config path
+	if err != nil {
+		return ScriptParams{}, err
+	}
+	var g struct {
+		ExecutionPrices *struct {
+			PrMem   json.RawMessage `json:"prMem"`
+			PrSteps json.RawMessage `json:"prSteps"`
+		} `json:"executionPrices"`
+		MaxTxExUnits *struct {
+			Mem   *int64 `json:"exUnitsMem"`
+			Steps *int64 `json:"exUnitsSteps"`
+		} `json:"maxTxExUnits"`
+		CollateralPercentage *uint `json:"collateralPercentage"`
+		MaxCollateralInputs  *uint `json:"maxCollateralInputs"`
+	}
+	if err := json.Unmarshal(raw, &g); err != nil {
+		return ScriptParams{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	p := base
+	if g.ExecutionPrices != nil {
+		if g.ExecutionPrices.PrMem != nil {
+			if p.MemPrice, err = parseGenesisRat(g.ExecutionPrices.PrMem); err != nil {
+				return ScriptParams{}, fmt.Errorf("%s: prMem: %w", path, err)
+			}
+		}
+		if g.ExecutionPrices.PrSteps != nil {
+			if p.StepPrice, err = parseGenesisRat(g.ExecutionPrices.PrSteps); err != nil {
+				return ScriptParams{}, fmt.Errorf("%s: prSteps: %w", path, err)
+			}
+		}
+	}
+	if g.MaxTxExUnits != nil {
+		if m := g.MaxTxExUnits.Mem; m != nil {
+			if *m <= 0 {
+				return ScriptParams{}, fmt.Errorf("%s: exUnitsMem must be positive", path)
+			}
+			p.MaxTxExUnits.Memory = *m
+		}
+		if s := g.MaxTxExUnits.Steps; s != nil {
+			if *s <= 0 {
+				return ScriptParams{}, fmt.Errorf("%s: exUnitsSteps must be positive", path)
+			}
+			p.MaxTxExUnits.Steps = *s
+		}
+	}
+	if g.CollateralPercentage != nil {
+		p.CollateralPercentage = *g.CollateralPercentage
+	}
+	if g.MaxCollateralInputs != nil {
+		p.MaxCollateralInputs = *g.MaxCollateralInputs
+	}
+	return p, nil
+}
+
+// parseGenesisRat reads a genesis price written either as a decimal number
+// or as {"numerator": n, "denominator": d}.
+func parseGenesisRat(raw json.RawMessage) (*big.Rat, error) {
+	var nd struct {
+		Numerator   *big.Int `json:"numerator"`
+		Denominator *big.Int `json:"denominator"`
+	}
+	if err := json.Unmarshal(raw, &nd); err == nil && nd.Numerator != nil && nd.Denominator != nil {
+		if nd.Denominator.Sign() == 0 {
+			return nil, errors.New("zero denominator")
+		}
+		return new(big.Rat).SetFrac(nd.Numerator, nd.Denominator), nil
+	}
+	var num json.Number
+	if err := json.Unmarshal(raw, &num); err != nil {
+		return nil, fmt.Errorf("not a number: %s", raw)
+	}
+	r, ok := new(big.Rat).SetString(num.String())
+	if !ok {
+		return nil, fmt.Errorf("not a number: %s", raw)
+	}
+	return r, nil
 }
 
 // loadPlutusV3CostModel reads plutusV3CostModel from a Conway genesis file.
