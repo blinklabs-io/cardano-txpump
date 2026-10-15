@@ -83,3 +83,9 @@ func TestStubLedgerResolvesNativeAssets(t *testing.T) {
 		require.NotNil(t, u.Output.Assets())
 	}
 }
+
+func TestHoldsNativeAssets(t *testing.T) {
+	addr := enterpriseAddr(testSigningKey(1))
+	require.True(t, holdsNativeAssets(decodeOutput(t, plutusOutput{Address: addr, Amount: 2_000_000, Assets: []NativeAsset{testAsset(1)}})))
+	require.False(t, holdsNativeAssets(decodeOutput(t, plutusOutput{Address: addr, Amount: 2_000_000})))
+}

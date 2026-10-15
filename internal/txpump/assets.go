@@ -50,6 +50,15 @@ func assetMap(assets []NativeAsset) map[common.Blake2b224]map[cbor.ByteString]*b
 	return m
 }
 
+// holdsNativeAssets reports whether an output carries any native asset. The
+// wallet spends its coins as plain ADA, so such an output must stay out of
+// it: spending one without returning its assets would burn them and fail the
+// transaction.
+func holdsNativeAssets(o common.TransactionOutput) bool {
+	ma := o.Assets()
+	return ma != nil && len(ma.Policies()) > 0
+}
+
 // plutusOutputWire is plutusOutput as it is encoded: the value is a bare
 // coin, or [coin, multiasset] when the output carries native assets.
 type plutusOutputWire struct {
