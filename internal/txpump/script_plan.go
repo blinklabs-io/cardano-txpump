@@ -99,7 +99,8 @@ func PlanScriptTx(spec ScriptTxSpec, v *Verifier, p ScriptParams, known []KnownU
 	// Every rebuild recomputes the script data hash over the declared units
 	// and re-signs the new body.
 	var txID string
-	fee := minFeeFor(len(txBytes), spec.ExUnits, p, 0) * 11 / 10
+	refSize := spec.referenceScriptSize()
+	fee := minFeeFor(len(txBytes), spec.ExUnits, p, refSize) * 11 / 10
 	if spec.ChangeIndex < 0 {
 		// The caller's fee is final; Verify enforces the minimum.
 		fee = spec.Fee
@@ -111,7 +112,7 @@ func PlanScriptTx(spec ScriptTxSpec, v *Verifier, p ScriptParams, known []KnownU
 		if txBytes, txID, err = BuildScriptTx(spec); err != nil {
 			return nil, "", err
 		}
-		need := minFeeFor(len(txBytes), spec.ExUnits, p, 0)
+		need := minFeeFor(len(txBytes), spec.ExUnits, p, refSize)
 		if spec.ChangeIndex < 0 || need <= fee {
 			if _, err := v.Verify(txBytes, known, slot); err != nil {
 				return nil, "", err
@@ -121,6 +122,15 @@ func PlanScriptTx(spec ScriptTxSpec, v *Verifier, p ScriptParams, known []KnownU
 		fee = need * 11 / 10
 	}
 	return nil, "", errors.New("plan: fee did not converge")
+}
+
+// referenceScriptSize is the byte size of the reference scripts the
+// transaction's reference input makes the ledger charge for.
+func (s ScriptTxSpec) referenceScriptSize() uint64 {
+	if s.ReferenceScript == nil {
+		return 0
+	}
+	return uint64(len(s.ReferenceScript.Script))
 }
 
 func scaleUp(n int64) int64 {

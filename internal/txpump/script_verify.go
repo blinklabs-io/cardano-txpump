@@ -124,6 +124,12 @@ func KnownUTxOsFromTx(txBytes []byte) ([]KnownUTxO, error) {
 		if d := o.Datum(); d != nil {
 			k.Datum = append([]byte(nil), d.Cbor()...)
 		}
+		if s := o.ScriptRef(); s != nil {
+			if v, ok := common.PlutusScriptVersion(s); !ok || v != 2 {
+				return nil, fmt.Errorf("known utxos: output %d carries a reference script other than Plutus V3", i)
+			}
+			k.ScriptV3 = append([]byte(nil), s.RawScriptBytes()...)
+		}
 		known = append(known, k)
 	}
 	return known, nil

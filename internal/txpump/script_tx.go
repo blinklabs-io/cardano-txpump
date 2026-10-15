@@ -56,9 +56,12 @@ type ScriptTxSpec struct {
 	ValidityStart   uint64   // 0: no lower bound
 	TTL             uint64   // 0: no upper bound
 	// ExUnits is the execution budget declared for the script input.
-	ExUnits   common.ExUnits
-	Fee       uint64
-	CostModel []int64
+	ExUnits common.ExUnits
+	// ReferenceScript, when set, supplies the validator through a reference
+	// input instead of the witness set.
+	ReferenceScript *RefScript
+	Fee             uint64
+	CostModel       []int64
 	// SigningKeys are extra signers, such as the holders of RequiredSigners.
 	SigningKeys []*UTxOKey
 	// ChangeIndex is the output PlanScriptTx takes the fee from; that
@@ -78,6 +81,7 @@ type ScriptTxSpec struct {
 // Key 11 = script_data_hash
 // Key 13 = collateral inputs
 // Key 14 = required signers
+// Key 18 = reference inputs
 type scriptTxBody struct {
 	Inputs          cbor.Set       `cbor:"0,keyasint"`
 	Outputs         []plutusOutput `cbor:"1,keyasint"`
@@ -87,6 +91,7 @@ type scriptTxBody struct {
 	ScriptDataHash  []byte         `cbor:"11,keyasint,omitempty"`
 	Collateral      cbor.Set       `cbor:"13,keyasint,omitempty"`
 	RequiredSigners cbor.Set       `cbor:"14,keyasint,omitempty"`
+	ReferenceInputs cbor.Set       `cbor:"18,keyasint,omitempty"`
 }
 
 type conwayScriptTx struct {
@@ -129,6 +134,20 @@ func BuildScriptTx(spec ScriptTxSpec) ([]byte, string, error) {
 			return nil, "", errors.New("script_tx: collateral must be key-locked")
 		}
 	}
+	var referenceInputs cbor.Set
+	if ref := spec.ReferenceScript; ref != nil {
+		if !bytes.Equal(ref.Hash, spec.Validator.Hash) {
+			return nil, "", errors.New("script_tx: reference script is not the validator")
+		}
+		if !bytes.Equal(ref.Script, spec.Validator.Code) {
+			return nil, "", errors.New("script_tx: reference script differs from the validator code")
+		}
+		h, err := decodeTxHash(ref.UTxO.TxHash)
+		if err != nil {
+			return nil, "", err
+		}
+		referenceInputs = cbor.Set{txBodyInput{Hash: h, Idx: ref.UTxO.Index}}
+	}
 	scriptAddr := spec.Validator.Address()
 	scriptOutputs := 0
 	for _, o := range spec.Outputs {
@@ -166,6 +185,11 @@ func BuildScriptTx(spec ScriptTxSpec) ([]byte, string, error) {
 	for _, u := range spec.WalletInputs {
 		if err := add(u, false); err != nil {
 			return nil, "", err
+		}
+	}
+	if ref := spec.ReferenceScript; ref != nil {
+		if _, spent := seen[utxoKey(ref.UTxO)]; spent {
+			return nil, "", fmt.Errorf("script_tx: reference input %s is also spent", utxoKey(ref.UTxO))
 		}
 	}
 	collateralSet := make(cbor.Set, 0, len(spec.Collateral))
@@ -247,6 +271,7 @@ func BuildScriptTx(spec ScriptTxSpec) ([]byte, string, error) {
 		ScriptDataHash:  scriptDataHash.Bytes(),
 		Collateral:      collateralSet,
 		RequiredSigners: signers,
+		ReferenceInputs: referenceInputs,
 	}
 	bodyBytes, err := cbor.Encode(body)
 	if err != nil {
@@ -261,7 +286,9 @@ func BuildScriptTx(spec ScriptTxSpec) ([]byte, string, error) {
 	}
 	witness := BuildWitnessMap(bodyBytes, keys...)
 	witness[uint64(5)] = cbor.RawMessage(redeemers)
-	witness[uint64(7)] = [][]byte{spec.Validator.Code}
+	if spec.ReferenceScript == nil {
+		witness[uint64(7)] = [][]byte{spec.Validator.Code}
+	}
 	txBytes, err := cbor.Encode(conwayScriptTx{
 		Body:    body,
 		Witness: witness,
