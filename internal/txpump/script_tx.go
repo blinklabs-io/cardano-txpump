@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"sort"
 
 	"github.com/blinklabs-io/gouroboros/cbor"
@@ -42,11 +43,16 @@ type ScriptOutput struct {
 	Datum    data.PlutusData
 }
 
-// ScriptTxSpec describes a Conway transaction that spends one Plutus V3
-// script input.
+// ScriptTxSpec describes a Conway transaction that runs one Plutus V3 script
+// purpose: spending one script input, or minting under the validator's own
+// policy.
 type ScriptTxSpec struct {
 	Validator    PlutusV3Validator
 	ScriptInputs []ScriptInput
+	// Mint is minted under Validator's hash as the policy, with MintRedeemer.
+	// It excludes ScriptInputs: a transaction has one script purpose.
+	Mint         []NativeAsset
+	MintRedeemer data.PlutusData
 	// WalletInputs are key-locked inputs; their keys sign the transaction.
 	WalletInputs []UTxO
 	// Collateral is key-locked and disjoint from the spent inputs; its keys
@@ -79,20 +85,22 @@ type ScriptTxSpec struct {
 // Key 2  = fee
 // Key 3  = ttl
 // Key 8  = validity interval start
+// Key 9  = mint
 // Key 11 = script_data_hash
 // Key 13 = collateral inputs
 // Key 14 = required signers
 // Key 18 = reference inputs
 type scriptTxBody struct {
-	Inputs          cbor.Set       `cbor:"0,keyasint"`
-	Outputs         []plutusOutput `cbor:"1,keyasint"`
-	Fee             uint64         `cbor:"2,keyasint"`
-	TTL             uint64         `cbor:"3,keyasint,omitempty"`
-	ValidityStart   uint64         `cbor:"8,keyasint,omitempty"`
-	ScriptDataHash  []byte         `cbor:"11,keyasint,omitempty"`
-	Collateral      cbor.Set       `cbor:"13,keyasint,omitempty"`
-	RequiredSigners cbor.Set       `cbor:"14,keyasint,omitempty"`
-	ReferenceInputs cbor.Set       `cbor:"18,keyasint,omitempty"`
+	Inputs          cbor.Set                                           `cbor:"0,keyasint"`
+	Outputs         []plutusOutput                                     `cbor:"1,keyasint"`
+	Fee             uint64                                             `cbor:"2,keyasint"`
+	TTL             uint64                                             `cbor:"3,keyasint,omitempty"`
+	ValidityStart   uint64                                             `cbor:"8,keyasint,omitempty"`
+	Mint            map[common.Blake2b224]map[cbor.ByteString]*big.Int `cbor:"9,keyasint,omitempty"`
+	ScriptDataHash  []byte                                             `cbor:"11,keyasint,omitempty"`
+	Collateral      cbor.Set                                           `cbor:"13,keyasint,omitempty"`
+	RequiredSigners cbor.Set                                           `cbor:"14,keyasint,omitempty"`
+	ReferenceInputs cbor.Set                                           `cbor:"18,keyasint,omitempty"`
 }
 
 type conwayScriptTx struct {
@@ -112,8 +120,25 @@ type sortedInput struct {
 // BuildScriptTx encodes and signs the transaction spec describes and returns
 // it with its transaction ID.
 func BuildScriptTx(spec ScriptTxSpec) ([]byte, string, error) {
-	if len(spec.ScriptInputs) == 0 {
-		return nil, "", errors.New("script_tx: a script input is required")
+	minting := len(spec.Mint) > 0
+	if minting && len(spec.ScriptInputs) > 0 {
+		return nil, "", errors.New("script_tx: a transaction either mints or spends a script input")
+	}
+	if !minting && len(spec.ScriptInputs) == 0 {
+		return nil, "", errors.New("script_tx: a script input or a mint is required")
+	}
+	if minting {
+		if spec.MintRedeemer == nil {
+			return nil, "", errors.New("script_tx: mint needs a redeemer")
+		}
+		for _, a := range spec.Mint {
+			if !bytes.Equal(a.Policy, spec.Validator.Hash) {
+				return nil, "", errors.New("script_tx: only the validator's own policy can be minted")
+			}
+			if a.Quantity == 0 {
+				return nil, "", errors.New("script_tx: mint quantity must be positive")
+			}
+		}
 	}
 	// Each template validator checks a single script input and a single
 	// continuing output at its address; a second one would either be
@@ -241,7 +266,15 @@ func BuildScriptTx(spec ScriptTxSpec) ([]byte, string, error) {
 		outputs = append(outputs, out)
 	}
 
-	redeemers, err := encodeSpendRedeemers(redeemerIndex, spec.ScriptInputs[0].Redeemer, spec.ExUnits)
+	// The single policy is the first, and only, in the sorted mint order.
+	tag, index, redeemer := common.RedeemerTagMint, uint64(0), spec.MintRedeemer
+	var mint map[common.Blake2b224]map[cbor.ByteString]*big.Int
+	if minting {
+		mint = assetMap(spec.Mint)
+	} else {
+		tag, index, redeemer = common.RedeemerTagSpend, redeemerIndex, spec.ScriptInputs[0].Redeemer
+	}
+	redeemers, err := encodeRedeemer(tag, index, redeemer, spec.ExUnits)
 	if err != nil {
 		return nil, "", err
 	}
@@ -269,6 +302,7 @@ func BuildScriptTx(spec ScriptTxSpec) ([]byte, string, error) {
 		Fee:             spec.Fee,
 		TTL:             spec.TTL,
 		ValidityStart:   spec.ValidityStart,
+		Mint:            mint,
 		ScriptDataHash:  scriptDataHash.Bytes(),
 		Collateral:      collateralSet,
 		RequiredSigners: signers,
@@ -301,10 +335,10 @@ func BuildScriptTx(spec ScriptTxSpec) ([]byte, string, error) {
 	return txBytes, common.Blake2b256Hash(bodyBytes).String(), nil
 }
 
-// encodeSpendRedeemers returns the Conway map-form redeemers for one spend:
-// {[0, index]: [data, [mem, steps]]}.
-func encodeSpendRedeemers(index uint64, redeemer data.PlutusData, ex common.ExUnits) ([]byte, error) {
-	key, err := cbor.Encode([]uint64{uint64(common.RedeemerTagSpend), index})
+// encodeRedeemer returns the Conway map-form redeemers for one script
+// purpose: {[tag, index]: [data, [mem, steps]]}.
+func encodeRedeemer(tag common.RedeemerTag, index uint64, redeemer data.PlutusData, ex common.ExUnits) ([]byte, error) {
+	key, err := cbor.Encode([]uint64{uint64(tag), index})
 	if err != nil {
 		return nil, fmt.Errorf("script_tx: redeemer key encoding failed: %w", err)
 	}
