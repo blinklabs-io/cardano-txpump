@@ -306,20 +306,17 @@ func (p *Pump) reconcilePlutusSnapshot(snapshot []UTxO, presence map[string]bool
 		}
 	}
 
-	pendingInputs := make(map[string]struct{}, len(p.pendingPlutusUnlocks))
 	for txID, pending := range p.pendingPlutusUnlocks {
 		key := utxoKey(pending.locked)
 		if presence[txID] {
 			pending.absentRounds = 0
 			p.pendingPlutusUnlocks[txID] = pending
-			pendingInputs[key] = struct{}{}
 			continue
 		}
 		if _, stillLocked := onChain[key]; stillLocked {
 			pending.absentRounds++
 			if pending.absentRounds < 2 {
 				p.pendingPlutusUnlocks[txID] = pending
-				pendingInputs[key] = struct{}{}
 				continue
 			}
 			if _, exists := known[key]; !exists {
@@ -330,17 +327,9 @@ func (p *Pump) reconcilePlutusSnapshot(snapshot []UTxO, presence map[string]bool
 		delete(p.pendingPlutusUnlocks, txID)
 	}
 
-	for _, utxo := range snapshot {
-		key := utxoKey(utxo)
-		if _, exists := known[key]; exists {
-			continue
-		}
-		if _, unlocking := pendingInputs[key]; unlocking {
-			continue
-		}
-		nextLocked = append(nextLocked, utxo)
-		known[key] = struct{}{}
-	}
+	// Script outputs have no key credential, so an address query cannot tell
+	// which txpump instance created them. Only retain outputs already tracked
+	// from this process's own accepted lock transactions.
 	p.plutusLocked = nextLocked
 }
 

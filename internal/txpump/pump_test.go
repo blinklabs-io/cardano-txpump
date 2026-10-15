@@ -61,6 +61,17 @@ func TestCurrentSlotBeforeGenesisIsZero(t *testing.T) {
 	require.Zero(t, pump.currentSlot())
 }
 
+func TestReconcilePlutusSnapshotKeepsOnlyLocallyCreatedOutputs(t *testing.T) {
+	pump := testPump(time.Now(), time.Second)
+	local := UTxO{TxHash: "local-lock", Index: 0, Amount: plutusLockAmount}
+	foreign := UTxO{TxHash: "other-instance-lock", Index: 0, Amount: plutusLockAmount}
+	pump.plutusLocked = []UTxO{local}
+
+	pump.reconcilePlutusSnapshot([]UTxO{local, foreign}, nil)
+
+	require.Equal(t, []UTxO{local}, pump.plutusLocked)
+}
+
 func TestRunSkipsBatchWhenKeyedWalletReconciliationFails(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

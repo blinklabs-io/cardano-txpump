@@ -30,7 +30,8 @@ The workload types exercise different ledger paths:
 - `governance` registers or updates a DRep credential, starting in epoch 2.
 - `plutus` locks ADA at an always-succeeds Plutus V3 script and can later spend
   that output; it starts in epoch 3 and needs the network's Plutus V3 cost
-  model to unlock outputs.
+  model to unlock outputs. Each process unlocks only script outputs it created
+  during that run; outputs from other processes or earlier runs are not adopted.
 - `peer_payment` pays ADA from one genesis-keyed user to another, so outputs
   change owner. It does nothing when the wallet holds a single key.
 - `escrow` has two users trade ADA through the cardano-templates escrow
@@ -50,9 +51,10 @@ UTxOs. It takes zero-based positions and inclusive ranges, such as `0,2-3`,
 into the `genesis.<n>.skey` files sorted by file name (so `genesis.10` sorts
 before `genesis.2`). UTxOs of unselected keys are ignored for every type.
 Startup fails on a malformed value, a position past the last key, or a
-position above 65535. Apps that need several users, such as `peer_payment`,
-count only the selected ones. Types that work on a shared script address, such
-as `plutus`, are not partitioned by key: enable them on one instance only.
+position past the last key. Ranges are kept compact until they are checked
+against the loaded key count. Apps that need several users, such as
+`peer_payment`, count only the selected ones. `plutus` outputs share a script
+address, so each process tracks only outputs it created during its current run.
 
 Submitted and rejected transactions are reported as JSON logs and appended to
 `$TXPUMP_LOG_DIR/txpump.log` (default `/logs/txpump.log`).

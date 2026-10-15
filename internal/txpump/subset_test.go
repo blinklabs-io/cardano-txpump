@@ -24,15 +24,17 @@ import (
 func TestParseUserIndexes(t *testing.T) {
 	tests := []struct {
 		in   string
-		want []int
+		want []UserIndexRange
 	}{
-		{"0", []int{0}},
-		{"2,0", []int{0, 2}},
-		{"0-2", []int{0, 1, 2}},
-		{" 1 , 3-4 ", []int{1, 3, 4}},
-		{"1,1,0-1", []int{0, 1}},
-		{"3-3", []int{3}},
-		{"9,8,7,6,5,4,3,2,1,0", []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}},
+		{"0", []UserIndexRange{{First: 0, Last: 0}}},
+		{"2,0", []UserIndexRange{{First: 0, Last: 0}, {First: 2, Last: 2}}},
+		{"0-2", []UserIndexRange{{First: 0, Last: 2}}},
+		{" 1 , 3-4 ", []UserIndexRange{{First: 1, Last: 1}, {First: 3, Last: 4}}},
+		{"1,1,0-1", []UserIndexRange{{First: 0, Last: 1}}},
+		{"3-3", []UserIndexRange{{First: 3, Last: 3}}},
+		{"9,8,7,6,5,4,3,2,1,0", []UserIndexRange{{First: 0, Last: 9}}},
+		{"65536", []UserIndexRange{{First: 65536, Last: 65536}}},
+		{"0-999999999", []UserIndexRange{{First: 0, Last: 999999999}}},
 	}
 	for _, tt := range tests {
 		got, err := parseUserIndexes(tt.in)
@@ -44,7 +46,6 @@ func TestParseUserIndexes(t *testing.T) {
 func TestParseUserIndexesRejectsBadInput(t *testing.T) {
 	for _, in := range []string{
 		",", " ", "a", "-1", "1-", "-", "3-1", "1,,x", "0-1-2", "99999999999999999999",
-		"0-9999999",
 	} {
 		_, err := parseUserIndexes(in)
 		require.Error(t, err, in)
@@ -53,6 +54,7 @@ func TestParseUserIndexesRejectsBadInput(t *testing.T) {
 }
 
 func TestLoadConfigUsers(t *testing.T) {
+	t.Setenv("TXPUMP_USERS", "1")
 	clearTxpumpEnv(t)
 	cfg, err := LoadConfig()
 	require.NoError(t, err)
@@ -61,7 +63,9 @@ func TestLoadConfigUsers(t *testing.T) {
 	t.Setenv("TXPUMP_USERS", "1,3")
 	cfg, err = LoadConfig()
 	require.NoError(t, err)
-	assert.Equal(t, []int{1, 3}, cfg.Users)
+	assert.Equal(t, []UserIndexRange{
+		{First: 1, Last: 1}, {First: 3, Last: 3},
+	}, cfg.Users)
 
 	t.Setenv("TXPUMP_USERS", "x")
 	_, err = LoadConfig()
@@ -77,21 +81,44 @@ func TestSelectUserKeys(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, keys, got, "nil selection keeps every key")
 
-	got, err = SelectUserKeys(keys, []int{0, 2})
+	got, err = SelectUserKeys(keys, []UserIndexRange{
+		{First: 0, Last: 0}, {First: 2, Last: 2},
+	})
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	assert.Same(t, keys[0], got[0])
 	assert.Same(t, keys[2], got[1])
 
-	_, err = SelectUserKeys(keys, []int{1, 3})
+	_, err = SelectUserKeys(keys, []UserIndexRange{{First: 1, Last: 3}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "TXPUMP_USERS")
 	assert.Contains(t, err.Error(), "3")
 	assert.Contains(t, err.Error(), "3 keys")
 
-	_, err = SelectUserKeys(keys, []int{-1})
+	_, err = SelectUserKeys(keys, []UserIndexRange{{First: -1, Last: -1}})
 	require.Error(t, err)
 
-	_, err = SelectUserKeys(nil, []int{0})
+	_, err = SelectUserKeys([]*UTxOKey{}, []UserIndexRange{{First: 0, Last: 0}})
 	require.Error(t, err)
+}
+
+func TestSelectUserKeysSupportsLargeIndexesAndDeduplicatesRanges(t *testing.T) {
+	keys := make([]*UTxOKey, 65537)
+	selectedKey := &UTxOKey{Address: []byte{1}}
+	keys[65536] = selectedKey
+
+	indexes, err := parseUserIndexes("65536,65536")
+	require.NoError(t, err)
+	got, err := SelectUserKeys(keys, indexes)
+	require.NoError(t, err)
+	require.Equal(t, []*UTxOKey{selectedKey}, got)
+}
+
+func TestSelectUserKeysBoundsLargeRangesByLoadedKeys(t *testing.T) {
+	_, err := SelectUserKeys(
+		[]*UTxOKey{{}, {}, {}},
+		[]UserIndexRange{{First: 0, Last: 999999999}},
+	)
+	require.ErrorContains(t, err, "999999999")
+	require.ErrorContains(t, err, "3 keys loaded")
 }
