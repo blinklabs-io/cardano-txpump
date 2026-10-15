@@ -108,3 +108,36 @@ func TestVestingDataConstructors(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []byte{0xd8, 0x79, 0x80}, rd, "the validator ignores the redeemer; Void is Constr 0 with no fields")
 }
+
+func TestAuctionDataConstructors(t *testing.T) {
+	seller := bytes.Repeat([]byte{0x11}, 28)
+	bidder := bytes.Repeat([]byte{0x22}, 28)
+	policy := bytes.Repeat([]byte{0x33}, 28)
+
+	datum := auctionDatum(seller, bidder, 6_000_000, 1_700_000_300_000, policy, []byte("lot"))
+	require.True(t, datum.Equal(data.NewConstr(0,
+		data.NewByteString(seller),
+		data.NewByteString(bidder),
+		data.NewInteger(big.NewInt(6_000_000)),
+		data.NewInteger(big.NewInt(1_700_000_300_000)),
+		data.NewByteString(policy),
+		data.NewByteString([]byte("lot")),
+	)))
+
+	// No bids yet is the empty byte string, which the validator compares
+	// against "".
+	open := auctionDatum(seller, nil, 3_000_000, 1, policy, []byte("lot"))
+	require.True(t, open.Equal(data.NewConstr(0,
+		data.NewByteString(seller),
+		data.NewByteString([]byte{}),
+		data.NewInteger(big.NewInt(3_000_000)),
+		data.NewInteger(big.NewInt(1)),
+		data.NewByteString(policy),
+		data.NewByteString([]byte("lot")),
+	)))
+
+	// Action declares BID, WITHDRAW, END in that order.
+	require.True(t, auctionBidRedeemer().Equal(data.NewConstr(0)))
+	require.True(t, auctionEndRedeemer().Equal(data.NewConstr(2)))
+	require.True(t, auctionMintRedeemer().Equal(data.NewConstr(0)))
+}
