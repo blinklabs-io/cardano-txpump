@@ -123,6 +123,12 @@ func mustNewEscrowApp() *escrowApp {
 	return a
 }
 
+// ReferenceValidators lists the validators the app can spend through a
+// published reference script.
+func (a *escrowApp) ReferenceValidators() []PlutusV3Validator {
+	return []PlutusV3Validator{a.validator}
+}
+
 // Enabled reports whether there is a second user to trade with.
 func (a *escrowApp) Enabled(users int) bool { return users >= 2 }
 

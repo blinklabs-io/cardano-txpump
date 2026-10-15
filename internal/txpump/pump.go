@@ -38,6 +38,8 @@ type Pump struct {
 	pendingPlutusUnlocks map[string]pendingPlutusUnlock
 	// users are the identities registered apps act as, one per wallet key.
 	users []*User
+	// refs tracks published reference scripts; nil when they are off.
+	refs *RefScripts
 	// Credentials (hex key hashes) txpump has registered as stake keys and
 	// DReps, mapped to when the registration is expected on chain, so later
 	// certificates skip the registration deposit.
@@ -84,6 +86,9 @@ func NewPump(
 //  3. Submits the batch, one transaction at a time.
 //  4. Waits a random cooldown in [CooldownMin, CooldownMax] milliseconds.
 func (p *Pump) Run(ctx context.Context) error {
+	if err := p.setupReferenceScripts(); err != nil {
+		return err
+	}
 	if p.users == nil && p.wallet != nil {
 		p.users = usersFromWallet(p.wallet)
 	}
@@ -210,17 +215,10 @@ func (p *Pump) Run(ctx context.Context) error {
 				}
 				continue
 			}
-			walletSnapshot := make([]UTxO, 0, len(snapshot))
-			plutusSnapshot := make([]UTxO, 0, len(snapshot))
-			for _, utxo := range snapshot {
-				if bytes.Equal(utxo.Address, scriptAddress) {
-					plutusSnapshot = append(plutusSnapshot, utxo)
-				} else {
-					walletSnapshot = append(walletSnapshot, utxo)
-				}
+			p.applySnapshot(snapshot, presence, scriptAddress)
+			if p.refs != nil {
+				p.publishReferenceScripts(client, batchSize)
 			}
-			p.wallet.ReconcileSnapshot(walletSnapshot, presence)
-			p.reconcilePlutusSnapshot(plutusSnapshot, presence)
 		}
 		submitted := p.runBatch(ctx, client, batchSize)
 		if stopStartupAbort != nil {
@@ -285,6 +283,30 @@ func startupDialTimeout(ready bool, deadline time.Time) time.Duration {
 		return remaining
 	}
 	return dialTimeout
+}
+
+// applySnapshot folds the node's UTxO snapshot into the wallet, the Plutus
+// workload and the reference-script registry. Reference outputs go only to
+// the registry, never to the wallet.
+func (p *Pump) applySnapshot(snapshot []UTxO, presence map[string]bool, scriptAddress []byte) {
+	var refSnapshot []UTxO
+	if pub := p.wallet.ReservedKey(); p.refs != nil && pub != nil {
+		snapshot, refSnapshot = splitReferenceSnapshot(snapshot, pub.Address)
+	}
+	walletSnapshot := make([]UTxO, 0, len(snapshot))
+	plutusSnapshot := make([]UTxO, 0, len(snapshot))
+	for _, utxo := range snapshot {
+		if bytes.Equal(utxo.Address, scriptAddress) {
+			plutusSnapshot = append(plutusSnapshot, utxo)
+		} else {
+			walletSnapshot = append(walletSnapshot, utxo)
+		}
+	}
+	p.wallet.ReconcileSnapshot(walletSnapshot, presence)
+	p.reconcilePlutusSnapshot(plutusSnapshot, presence)
+	if p.refs != nil {
+		p.refs.Sync(refSnapshot, p.referenceValidators(), presence)
+	}
 }
 
 func (p *Pump) reconcilePlutusSnapshot(snapshot []UTxO, presence map[string]bool) {
@@ -550,6 +572,7 @@ func (p *Pump) runApp(
 		Users:  p.users,
 		Wallet: p.wallet,
 		Cfg:    p.cfg,
+		Refs:   p.refs,
 		Slot:   p.currentSlot(),
 		Logger: p.logger.With("app", name, "user", user.ID),
 		Submit: func(txType, txID string, txBytes []byte) error {

@@ -31,7 +31,10 @@ type UTxO struct {
 	Amount     uint64   // lovelace
 	SigningKey *UTxOKey // optional: Ed25519 key for signing inputs from this UTxO
 	// Address associates an explicit UTxO-list entry with its signing key.
-	Address     []byte
+	Address []byte
+	// ScriptRef is the Plutus V3 reference script the output carries, as
+	// reported by the node; nil for an output without one.
+	ScriptRef   []byte
 	availableAt time.Time
 }
 

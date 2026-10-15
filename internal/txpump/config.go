@@ -120,6 +120,22 @@ type Config struct {
 	// ScriptParams are the protocol parameters script apps build and verify
 	// transactions against.
 	ScriptParams ScriptParams
+
+	// ReferenceScripts selects where script apps get their validator:
+	// ReferenceScriptsOff carries it in every witness set, On publishes it
+	// once and spends through a reference input, Mixed picks per spend.
+	ReferenceScripts string
+}
+
+// Values of TXPUMP_REFERENCE_SCRIPTS.
+const (
+	ReferenceScriptsOff   = "off"
+	ReferenceScriptsOn    = "on"
+	ReferenceScriptsMixed = "mixed"
+)
+
+func (c *Config) referenceScriptsEnabled() bool {
+	return c != nil && (c.ReferenceScripts == ReferenceScriptsOn || c.ReferenceScripts == ReferenceScriptsMixed)
 }
 
 // LoadConfig reads configuration from environment variables and returns a
@@ -151,7 +167,8 @@ func LoadConfig() (*Config, error) {
 		DelegationPoolKeyHash: envString(
 			"TXPUMP_DELEGATION_POOL_KEY_HASH", "",
 		),
-		EpochLength: 500,
+		EpochLength:      500,
+		ReferenceScripts: envString("TXPUMP_REFERENCE_SCRIPTS", ReferenceScriptsOff),
 	}
 
 	if v := os.Getenv("TXPUMP_NETWORK_MAGIC"); v != "" {
@@ -487,6 +504,14 @@ func (c *Config) validate() error {
 				)
 			}
 		}
+	}
+	switch c.ReferenceScripts {
+	case "", ReferenceScriptsOff, ReferenceScriptsOn, ReferenceScriptsMixed:
+	default:
+		return fmt.Errorf(
+			"TXPUMP_REFERENCE_SCRIPTS must be off, on or mixed, got %q",
+			c.ReferenceScripts,
+		)
 	}
 	if c.DelegationPoolKeyHash != "" {
 		if _, err := decodeConfiguredHash(

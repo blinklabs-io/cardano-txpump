@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/blinklabs-io/gouroboros/cbor"
 	"github.com/blinklabs-io/gouroboros/ledger/common"
@@ -146,4 +148,242 @@ func BuildRefPublishTx(
 		fee = need * 11 / 10
 	}
 	return nil, "", none, 0, errors.New("ref_publish: fee did not converge")
+}
+
+// refPublishFeeBudget is the publisher value selected beyond the reference
+// output, covering the fee and a change output.
+const refPublishFeeBudget uint64 = 2_000_000
+
+// refPublishAbsentRounds is how many consecutive reconciliations may miss a
+// submitted publish, in neither the mempool nor a block, before it is
+// treated as lost and the validator is published again.
+const refPublishAbsentRounds = 2
+
+type pendingRef struct {
+	txID   string
+	absent int
+}
+
+// RefScripts tracks the validators published as reference scripts. The chain
+// is the only source of truth: Sync replaces what is known with what the node
+// reports, so a restarted process rediscovers earlier publications instead of
+// publishing again.
+type RefScripts struct {
+	mu      sync.Mutex
+	found   map[string]RefScript
+	pending map[string]*pendingRef
+}
+
+// NewRefScripts returns an empty registry.
+func NewRefScripts() *RefScripts {
+	return &RefScripts{found: map[string]RefScript{}, pending: map[string]*pendingRef{}}
+}
+
+// Lookup returns the published reference for the script with hash.
+func (r *RefScripts) Lookup(hash []byte) (RefScript, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ref, ok := r.found[string(hash)]
+	return ref, ok
+}
+
+// Missing returns the validators that are neither on chain nor being
+// published.
+func (r *RefScripts) Missing(wanted []PlutusV3Validator) []PlutusV3Validator {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []PlutusV3Validator
+	for _, v := range wanted {
+		if _, ok := r.found[string(v.Hash)]; ok {
+			continue
+		}
+		if _, ok := r.pending[string(v.Hash)]; ok {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// Sync replaces the known references with snapshot, the publisher address's
+// outputs that carry a reference script. An output counts only if the hash of
+// the script it carries is one of wanted; the lowest output reference wins
+// when several carry the same script. presence reports which submitted
+// transactions the node still holds.
+func (r *RefScripts) Sync(snapshot []UTxO, wanted []PlutusV3Validator, presence map[string]bool) {
+	want := make(map[string]struct{}, len(wanted))
+	for _, v := range wanted {
+		want[string(v.Hash)] = struct{}{}
+	}
+	found := make(map[string]RefScript)
+	for _, u := range snapshot {
+		if len(u.ScriptRef) == 0 {
+			continue
+		}
+		hash := common.PlutusV3Script(u.ScriptRef).Hash().Bytes()
+		if _, ok := want[string(hash)]; !ok {
+			continue
+		}
+		if cur, dup := found[string(hash)]; dup && utxoKey(cur.UTxO) <= utxoKey(u) {
+			continue
+		}
+		stored := u
+		stored.ScriptRef = nil
+		found[string(hash)] = RefScript{
+			UTxO:   stored,
+			Hash:   hash,
+			Script: append([]byte(nil), u.ScriptRef...),
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.found = found
+	for hash, p := range r.pending {
+		if _, ok := found[hash]; ok {
+			delete(r.pending, hash)
+			continue
+		}
+		if presence[p.txID] {
+			p.absent = 0
+			continue
+		}
+		p.absent++
+		if p.absent >= refPublishAbsentRounds {
+			delete(r.pending, hash)
+		}
+	}
+}
+
+// Publish publishes v from the wallet's reserved key and submits the
+// transaction. It returns false, with a nil error, when nothing was
+// submitted: the validator is already published or in flight, or the node
+// rejected the transaction. A publisher that cannot pay is an error.
+func (r *RefScripts) Publish(
+	v PlutusV3Validator,
+	w *Wallet,
+	p ScriptParams,
+	slot uint64,
+	delay time.Duration,
+	submit func(txID string, txBytes []byte) error,
+) (bool, error) {
+	if len(r.Missing([]PlutusV3Validator{v})) == 0 {
+		return false, nil
+	}
+	key := w.ReservedKey()
+	if key == nil {
+		return false, ErrKeyReserved
+	}
+	lovelace, err := refOutputLovelace(key.Address, v.Code, p)
+	if err != nil {
+		return false, err
+	}
+	inputs, _, err := w.SelectReservedCoins(lovelace + refPublishFeeBudget)
+	if err != nil {
+		return false, fmt.Errorf("publish %s: %w", v.Title, err)
+	}
+	txBytes, txID, _, change, err := BuildRefPublishTx(inputs, v, key.Address, p)
+	if err == nil {
+		_, err = NewVerifier(p).Verify(txBytes, walletKnown(inputs), slot)
+	}
+	if err != nil {
+		w.ReturnUTxOs(inputs)
+		return false, fmt.Errorf("publish %s: %w", v.Title, err)
+	}
+	if err := submit(txID, txBytes); err != nil {
+		w.ReturnUTxOs(inputs)
+		return false, nil
+	}
+	r.mu.Lock()
+	r.pending[string(v.Hash)] = &pendingRef{txID: txID}
+	r.mu.Unlock()
+	w.RecordAccepted(txID, inputs, []UTxO{{
+		TxHash: txID, Index: 1, Amount: change, SigningKey: key,
+	}}, delay)
+	return true, nil
+}
+
+// setupReferenceScripts designates the wallet key that owns the published
+// reference scripts and holds it out of normal traffic. The last key in
+// address order is used, so the choice is stable across runs.
+func (p *Pump) setupReferenceScripts() error {
+	if !p.cfg.referenceScriptsEnabled() {
+		return nil
+	}
+	keys := p.wallet.Keys()
+	if len(keys) < 2 {
+		return fmt.Errorf(
+			"TXPUMP_REFERENCE_SCRIPTS=%s needs at least two wallet keys, one to own the published scripts and one user; found %d",
+			p.cfg.ReferenceScripts, len(keys),
+		)
+	}
+	p.wallet.ReserveKey(keys[len(keys)-1])
+	p.refs = NewRefScripts()
+	return nil
+}
+
+// splitReferenceSnapshot separates the publisher's reference-script outputs
+// from the rest of snapshot. They must never reach the wallet, where coin
+// selection could spend them; every other output has its script dropped.
+func splitReferenceSnapshot(snapshot []UTxO, publisher []byte) (rest, refs []UTxO) {
+	for _, u := range snapshot {
+		if len(u.ScriptRef) > 0 && bytes.Equal(u.Address, publisher) {
+			refs = append(refs, u)
+			continue
+		}
+		u.ScriptRef = nil
+		rest = append(rest, u)
+	}
+	return rest, refs
+}
+
+// referenceValidators returns the validators of the enabled apps that spend
+// through reference scripts.
+func (p *Pump) referenceValidators() []PlutusV3Validator {
+	var out []PlutusV3Validator
+	seen := map[string]struct{}{}
+	for _, t := range p.cfg.Types {
+		app, ok := lookupApp(t)
+		if !ok || !appEnabled(app, len(p.users)) {
+			continue
+		}
+		ra, ok := app.(refScriptApp)
+		if !ok {
+			continue
+		}
+		for _, v := range ra.ReferenceValidators() {
+			if _, dup := seen[string(v.Hash)]; dup {
+				continue
+			}
+			seen[string(v.Hash)] = struct{}{}
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// publishReferenceScripts publishes each validator that is neither on chain
+// nor in flight. It runs after the snapshot Sync of the same round, so a
+// validator already on chain is never published again. Apps wait for the
+// Plutus V3 cost model, so nothing is published without one.
+func (p *Pump) publishReferenceScripts(client *NodeClient, batchSize int) {
+	params := scriptParamsFor(p.cfg)
+	if len(params.CostModel) == 0 {
+		return
+	}
+	for _, v := range p.refs.Missing(p.referenceValidators()) {
+		ok, err := p.refs.Publish(
+			v, p.wallet, params, p.currentSlot(), p.cfg.confirmationDelay(),
+			func(txID string, txBytes []byte) error {
+				return p.submitAppTx(client, batchSize, "ref_publish", txID, txBytes)
+			},
+		)
+		if err != nil {
+			p.logger.Error("reference script publish failed", "script", v.Title, "err", err)
+			return
+		}
+		if !ok {
+			return
+		}
+		p.logger.Info("reference script published", "script", v.Title)
+	}
 }
