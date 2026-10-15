@@ -138,6 +138,16 @@ func TestSubmitFailureStatusSeparatesRejectionFromTransportFailure(t *testing.T)
 	)
 }
 
+func TestSubmitFailureMessageSeparatesRejectionFromTransportFailure(t *testing.T) {
+	rejected := fmt.Errorf("node: %w", localtxsubmission.TransactionRejectedError{})
+	require.Equal(t, "tx rejected", submitFailureMessage("tx", rejected))
+	require.Equal(
+		t,
+		"plutus tx submit failed",
+		submitFailureMessage("plutus tx", errors.New("protocol is shutting down")),
+	)
+}
+
 // A connection that fails mid-batch ends the batch: every later submission
 // would wait out its own timeout on the same dead connection.
 func TestRunBatchStopsOnceTheConnectionFails(t *testing.T) {

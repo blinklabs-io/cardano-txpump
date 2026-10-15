@@ -52,6 +52,16 @@ func (c *NodeClient) Broken() bool {
 	return c != nil && c.broken.Load()
 }
 
+// submitFailureMessage words a submission failure for the log: a ledger
+// rejection is "<what> rejected", a transport failure is "<what> submit
+// failed", since the node never gave a verdict.
+func submitFailureMessage(what string, err error) string {
+	if submitFailureStatus(err) == "rejected" {
+		return what + " rejected"
+	}
+	return what + " submit failed"
+}
+
 // submitFailureStatus names a failed submission in the transaction log: a
 // ledger rejection is data about the transaction, anything else is a
 // transport failure and says nothing about it.

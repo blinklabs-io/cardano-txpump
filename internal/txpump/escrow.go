@@ -290,7 +290,7 @@ func (a *escrowApp) initiate(env *AppEnv, params ScriptParams) (bool, error) {
 	}
 	if err := env.Submit("escrow", txID, txBytes); err != nil {
 		env.Wallet.ReturnUTxOs(inputs)
-		env.Logger.Warn("tx rejected", "action", "initiate", "tx_id", txID, "err", err)
+		env.Logger.Warn(submitFailureMessage("tx", err), "action", "initiate", "tx_id", txID, "err", err)
 		return false, nil
 	}
 	known, err := KnownUTxOsFromTx(txBytes)
@@ -470,7 +470,7 @@ func (a *escrowApp) spend(env *AppEnv, params ScriptParams, pos *escrowPosition,
 	if err := env.Submit("escrow", txID, txBytes); err != nil {
 		env.Wallet.ReturnUTxOs(append(inputs, collateral...))
 		a.settle(pos, false, nil, true, namesMissingInput(err, pos.utxo.TxHash))
-		env.Logger.Warn("tx rejected", "action", action.String(), "tx_id", txID, "err", err)
+		env.Logger.Warn(submitFailureMessage("tx", err), "action", action.String(), "tx_id", txID, "err", err)
 		return false, nil
 	}
 	outs, err := KnownUTxOsFromTx(txBytes)

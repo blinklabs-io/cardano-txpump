@@ -71,7 +71,7 @@ func (peerPayment) Step(env *AppEnv) (bool, error) {
 	}
 	if err := env.Submit("peer_payment", txID, txBytes); err != nil {
 		env.Wallet.ReturnUTxOs(inputs)
-		env.Logger.Warn("tx rejected", "tx_id", txID, "err", err)
+		env.Logger.Warn(submitFailureMessage("tx", err), "tx_id", txID, "err", err)
 		return false, nil
 	}
 

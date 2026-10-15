@@ -722,7 +722,7 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 		entry.ErrorMsg = submitErr.Error()
 		p.wallet.ReturnUTxOs(inputs)
 		p.logger.Warn(
-			"tx rejected",
+			submitFailureMessage("tx", submitErr),
 			"tx_id", txID,
 			"err", submitErr,
 		)
@@ -878,7 +878,7 @@ func (p *Pump) submitCertTx(
 		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
 		p.logger.Warn(
-			txType+" tx rejected",
+			submitFailureMessage(txType+" tx", submitErr),
 			"tx_id", txID,
 			"registration", deposit > 0,
 			"err", submitErr,
@@ -1074,7 +1074,7 @@ func (p *Pump) submitPlutusTx(
 	if submitErr != nil {
 		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
-		p.logger.Warn("plutus tx rejected", "kind", kind, "tx_id", txID, "err", submitErr)
+		p.logger.Warn(submitFailureMessage("plutus tx", submitErr), "kind", kind, "tx_id", txID, "err", submitErr)
 	} else {
 		p.logger.Info("plutus tx submitted", "kind", kind, "tx_id", txID)
 	}
