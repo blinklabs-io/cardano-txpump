@@ -44,6 +44,9 @@ type AppEnv struct {
 	Users  []*User
 	Wallet *Wallet
 	Cfg    *Config
+	// Refs holds the published reference scripts; nil when reference
+	// scripts are off.
+	Refs   *RefScripts
 	Slot   uint64
 	Logger *slog.Logger
 	// Submit sends txBytes to the node and records the attempt in the
@@ -70,6 +73,12 @@ type gatedApp interface {
 func appEnabled(app App, users int) bool {
 	g, ok := app.(gatedApp)
 	return !ok || g.Enabled(users)
+}
+
+// refScriptApp is implemented by apps whose script spends can use a published
+// reference script.
+type refScriptApp interface {
+	ReferenceValidators() []PlutusV3Validator
 }
 
 // RegisterApp makes an app selectable by name. It panics on a bad name

@@ -257,16 +257,19 @@ func (c *NodeClient) ReconcileWallet(
 			)
 		}
 		amount := output.Amount()
-		snapshot = append(
-			snapshot,
-			UTxO{
-				TxHash: id.Hash.String(),
-				//nolint:gosec // ledger index is bounded by protocol
-				Index:   uint32(id.Idx),
-				Amount:  amount.Uint64(),
-				Address: raw,
-			},
-		)
+		utxo := UTxO{
+			TxHash: id.Hash.String(),
+			//nolint:gosec // ledger index is bounded by protocol
+			Index:   uint32(id.Idx),
+			Amount:  amount.Uint64(),
+			Address: raw,
+		}
+		if s := output.ScriptRef(); s != nil {
+			if v, ok := common.PlutusScriptVersion(s); ok && v == 2 {
+				utxo.ScriptRef = append([]byte(nil), s.RawScriptBytes()...)
+			}
+		}
+		snapshot = append(snapshot, utxo)
 	}
 	if !checkPending {
 		// Without the mempool, a pending transaction counts as confirmed (absent)
