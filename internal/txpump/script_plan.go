@@ -124,13 +124,30 @@ func PlanScriptTx(spec ScriptTxSpec, v *Verifier, p ScriptParams, known []KnownU
 	return nil, "", errors.New("plan: fee did not converge")
 }
 
-// referenceScriptSize is the byte size of the reference scripts the
-// transaction's reference input makes the ledger charge for.
+// referenceScriptSize is the byte size of reference scripts on the transaction's
+// inputs and reference inputs, each distinct output counted once.
 func (s ScriptTxSpec) referenceScriptSize() uint64 {
-	if s.ReferenceScript == nil {
-		return 0
+	consumed := make(map[string]uint64, len(s.ScriptInputs)+len(s.WalletInputs)+1)
+	add := func(u UTxO, script []byte) {
+		if len(script) == 0 {
+			return
+		}
+		consumed[utxoKey(u)] = uint64(len(script))
 	}
-	return uint64(len(s.ReferenceScript.Script))
+	for _, input := range s.ScriptInputs {
+		add(input.UTxO, input.UTxO.ScriptRef)
+	}
+	for _, input := range s.WalletInputs {
+		add(input, input.ScriptRef)
+	}
+	if s.ReferenceScript != nil {
+		add(s.ReferenceScript.UTxO, s.ReferenceScript.Script)
+	}
+	var total uint64
+	for _, size := range consumed {
+		total += size
+	}
+	return total
 }
 
 func scaleUp(n int64) int64 {

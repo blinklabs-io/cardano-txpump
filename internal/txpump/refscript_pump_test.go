@@ -26,6 +26,7 @@ import (
 )
 
 func TestLoadConfigReferenceScripts(t *testing.T) {
+	t.Setenv("TXPUMP_REFERENCE_SCRIPTS", "on")
 	clearTxpumpEnv(t)
 	cfg, err := LoadConfig()
 	require.NoError(t, err)
@@ -78,6 +79,16 @@ func TestSetupReferenceScriptsIsANoopWhenOff(t *testing.T) {
 func TestSetupReferenceScriptsNeedsAKeyBesideThePublisher(t *testing.T) {
 	p := newRefPump(t, ReferenceScriptsOn, escrowTestKey(1))
 	require.Error(t, p.setupReferenceScripts())
+}
+
+func TestSetupReferenceScriptsRequiresTwoEscrowUsers(t *testing.T) {
+	p := newRefPump(t, ReferenceScriptsOn, escrowTestKey(1), escrowTestKey(2))
+	err := p.setupReferenceScripts()
+	require.ErrorContains(t, err, "escrow")
+
+	p = newRefPump(t, ReferenceScriptsOn, escrowTestKey(1), escrowTestKey(2))
+	p.cfg.Types = []string{"payment"}
+	require.NoError(t, p.setupReferenceScripts(), "non-reference workloads retain the two-key minimum")
 }
 
 func TestSplitReferenceSnapshotKeepsReferenceOutputsOutOfTheWallet(t *testing.T) {

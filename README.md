@@ -36,9 +36,11 @@ The workload types exercise different ledger paths:
 - `escrow` has two users trade ADA through the cardano-templates escrow
   validator: one initiates, another deposits, then both complete the trade or
   either cancels. It needs at least two keys and the Plutus V3 cost model, and
-  runs from epoch 3. Every script transaction is planned from measured
-  execution units and checked offline against the Conway ledger rules and the
-  Plutus evaluator; a transaction that fails that check is not submitted.
+  runs from epoch 3. Reference-script mode reserves an additional publisher
+  key, so escrow requires three keys in that mode. Every script transaction is
+  planned from measured execution units and checked offline against the Conway
+  ledger rules and the Plutus evaluator; a transaction that fails that check is
+  not submitted.
 
 Each genesis signing key is one user. Registered apps such as `peer_payment`
 run as a randomly chosen user each time; `payment` and the other core types

@@ -330,12 +330,20 @@ func (w *Wallet) AddKey(key *UTxOKey) {
 // Balance returns the total lovelace held by the wallet.
 // If the sum would overflow uint64, math.MaxUint64 is returned.
 func (w *Wallet) Balance() uint64 {
+	return w.balance(true)
+}
+
+func (w *Wallet) spendableBalance() uint64 {
+	return w.balance(false)
+}
+
+func (w *Wallet) balance(includeReserved bool) uint64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	var total uint64
 	now := w.currentTime()
 	for _, u := range w.utxos {
-		if !w.isAvailable(u, now) {
+		if !w.isAvailable(u, now) || (!includeReserved && w.isReserved(u)) {
 			continue
 		}
 		if u.Amount > math.MaxUint64-total {

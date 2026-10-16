@@ -125,6 +125,36 @@ func TestPublishFailsLoudlyWhenThePublisherCannotPay(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestPublishSelectsTheActualFeeAndChangeRequirement(t *testing.T) {
+	h := newPublisherHarness(t)
+	refLovelace, err := refOutputLovelace(h.key.Address, h.validator.Code, h.params)
+	require.NoError(t, err)
+	var funding uint64
+	for extra := minSendAmount + MinFee; extra < 2_000_000; extra += 1_000 {
+		candidate := []UTxO{{
+			TxHash:     strings.Repeat("e1", 32),
+			Amount:     refLovelace + extra,
+			SigningKey: h.key,
+		}}
+		_, _, _, _, buildErr := BuildRefPublishTx(candidate, h.validator, h.key.Address, h.params)
+		if buildErr == nil {
+			funding = candidate[0].Amount
+			break
+		}
+	}
+	require.NotZero(t, funding, "a valid publish should fit below the fixed two-ADA budget")
+	require.Less(t, funding, refLovelace+2_000_000)
+	h.wallet = NewWallet()
+	h.wallet.Add(UTxO{
+		TxHash: strings.Repeat("e1", 32), Amount: funding, SigningKey: h.key,
+	})
+	h.wallet.ReserveKey(h.key)
+
+	ok, err := h.publish()
+	require.NoError(t, err)
+	require.True(t, ok)
+}
+
 func TestSyncFindsThePublishedScriptAfterARestart(t *testing.T) {
 	h := newPublisherHarness(t)
 	_, err := h.publish()

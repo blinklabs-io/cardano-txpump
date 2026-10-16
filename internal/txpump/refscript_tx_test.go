@@ -79,8 +79,9 @@ func TestPublishTxRejectsInputsThatCannotFundIt(t *testing.T) {
 func TestPublishTxRejectsScriptOverTheTransactionLimit(t *testing.T) {
 	key, in, v, p := publisherFixture(t)
 	v.Code = bytes.Repeat([]byte{1}, int(conway.MaxRefScriptSizePerTx)+1)
+	v.Hash = common.PlutusV3Script(v.Code).Hash().Bytes()
 	_, _, _, _, err := BuildRefPublishTx(in, v, key.Address, p)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "per-transaction reference-script limit")
 }
 
 func refSpendFixture(t *testing.T) (ScriptTxSpec, []KnownUTxO, RefScript, ScriptParams) {

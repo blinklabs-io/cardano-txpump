@@ -50,6 +50,8 @@ type Pump struct {
 	runBatchFn    func(context.Context, *NodeClient, int) int
 	cooldownFn    func(context.Context) bool
 	intRangeFn    func(int, int) int
+	// publishReferencesFn overrides reference publication in orchestration tests.
+	publishReferencesFn func(*NodeClient, int) int
 }
 
 type pendingPlutusUnlock struct {
@@ -216,11 +218,16 @@ func (p *Pump) Run(ctx context.Context) error {
 				continue
 			}
 			p.applySnapshot(snapshot, presence, scriptAddress)
-			if p.refs != nil {
-				p.publishReferenceScripts(client, batchSize)
+		}
+		published := 0
+		if p.refs != nil {
+			if p.publishReferencesFn != nil {
+				published = p.publishReferencesFn(client, batchSize)
+			} else {
+				published = p.publishReferenceScripts(client, batchSize)
 			}
 		}
-		submitted := p.runBatch(ctx, client, batchSize)
+		submitted := published + p.runBatch(ctx, client, batchSize)
 		if stopStartupAbort != nil {
 			stopStartupAbort()
 		}
@@ -624,10 +631,10 @@ func (p *Pump) submitAppTx(
 
 // submitPayment builds and submits a single payment transaction.
 func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
-	// Determine a send amount between minSendAmount and half the wallet balance
-	// (leaving room for fees and change).  Fall back to minSendAmount when the
-	// balance is very small.
-	balance := p.wallet.Balance()
+	// Determine a send amount between minSendAmount and half the spendable
+	// wallet balance (leaving room for fees and change). Fall back to
+	// minSendAmount when the balance is very small.
+	balance := p.wallet.spendableBalance()
 	maxSend := balance / 2
 	if maxSend < minSendAmount+MinFee {
 		p.logger.Debug(

@@ -113,10 +113,10 @@ func BuildRefPublishTx(
 	fee := MinFee
 	for range 4 {
 		if total < refLovelace+fee || total-refLovelace-fee < minSendAmount {
-			return nil, "", none, 0, fmt.Errorf(
-				"ref_publish: inputs %d cannot cover the reference output %d and fee %d",
-				total, refLovelace, fee,
-			)
+			return nil, "", none, 0, &refPublishFundsError{
+				Required: refLovelace + fee + minSendAmount,
+				Total:    total,
+			}
 		}
 		change := total - refLovelace - fee
 		body := txBodyPlutus{
@@ -150,9 +150,18 @@ func BuildRefPublishTx(
 	return nil, "", none, 0, errors.New("ref_publish: fee did not converge")
 }
 
-// refPublishFeeBudget is the publisher value selected beyond the reference
-// output, covering the fee and a change output.
-const refPublishFeeBudget uint64 = 2_000_000
+type refPublishFundsError struct {
+	Required uint64
+	Total    uint64
+}
+
+func (e *refPublishFundsError) Error() string {
+	return fmt.Sprintf(
+		"ref_publish: inputs %d cannot cover the reference output and fee; need at least %d lovelace including minimum change",
+		e.Total,
+		e.Required,
+	)
+}
 
 // refPublishAbsentRounds is how many consecutive reconciliations may miss a
 // submitted publish, in neither the mempool nor a block, before it is
@@ -277,29 +286,39 @@ func (r *RefScripts) Publish(
 	if err != nil {
 		return false, err
 	}
-	inputs, _, err := w.SelectReservedCoins(lovelace + refPublishFeeBudget)
-	if err != nil {
-		return false, fmt.Errorf("publish %s: %w", v.Title, err)
+	target := lovelace + minSendAmount + MinFee
+	for {
+		inputs, _, err := w.SelectReservedCoins(target)
+		if err != nil {
+			return false, fmt.Errorf("publish %s: %w", v.Title, err)
+		}
+		txBytes, txID, _, change, err := BuildRefPublishTx(inputs, v, key.Address, p)
+		if err != nil {
+			var fundsErr *refPublishFundsError
+			if errors.As(err, &fundsErr) && fundsErr.Required > target {
+				w.ReturnUTxOs(inputs)
+				target = fundsErr.Required
+				continue
+			}
+			w.ReturnUTxOs(inputs)
+			return false, fmt.Errorf("publish %s: %w", v.Title, err)
+		}
+		if _, err := NewVerifier(p).Verify(txBytes, walletKnown(inputs), slot); err != nil {
+			w.ReturnUTxOs(inputs)
+			return false, fmt.Errorf("publish %s: %w", v.Title, err)
+		}
+		if err := submit(txID, txBytes); err != nil {
+			w.ReturnUTxOs(inputs)
+			return false, nil
+		}
+		r.mu.Lock()
+		r.pending[string(v.Hash)] = &pendingRef{txID: txID}
+		r.mu.Unlock()
+		w.RecordAccepted(txID, inputs, []UTxO{{
+			TxHash: txID, Index: 1, Amount: change, SigningKey: key,
+		}}, delay)
+		return true, nil
 	}
-	txBytes, txID, _, change, err := BuildRefPublishTx(inputs, v, key.Address, p)
-	if err == nil {
-		_, err = NewVerifier(p).Verify(txBytes, walletKnown(inputs), slot)
-	}
-	if err != nil {
-		w.ReturnUTxOs(inputs)
-		return false, fmt.Errorf("publish %s: %w", v.Title, err)
-	}
-	if err := submit(txID, txBytes); err != nil {
-		w.ReturnUTxOs(inputs)
-		return false, nil
-	}
-	r.mu.Lock()
-	r.pending[string(v.Hash)] = &pendingRef{txID: txID}
-	r.mu.Unlock()
-	w.RecordAccepted(txID, inputs, []UTxO{{
-		TxHash: txID, Index: 1, Amount: change, SigningKey: key,
-	}}, delay)
-	return true, nil
 }
 
 // setupReferenceScripts designates the wallet key that owns the published
@@ -315,6 +334,22 @@ func (p *Pump) setupReferenceScripts() error {
 			"TXPUMP_REFERENCE_SCRIPTS=%s needs at least two wallet keys, one to own the published scripts and one user; found %d",
 			p.cfg.ReferenceScripts, len(keys),
 		)
+	}
+	userCount := len(keys) - 1
+	for _, name := range p.cfg.Types {
+		app, ok := lookupApp(name)
+		if !ok {
+			continue
+		}
+		if _, usesReferenceScripts := app.(refScriptApp); !usesReferenceScripts {
+			continue
+		}
+		if !appEnabled(app, userCount) {
+			return fmt.Errorf(
+				"TXPUMP_REFERENCE_SCRIPTS=%s needs enough wallet keys for reference workload %q; found %d",
+				p.cfg.ReferenceScripts, name, len(keys),
+			)
+		}
 	}
 	p.wallet.ReserveKey(keys[len(keys)-1])
 	p.refs = NewRefScripts()
@@ -365,11 +400,12 @@ func (p *Pump) referenceValidators() []PlutusV3Validator {
 // nor in flight. It runs after the snapshot Sync of the same round, so a
 // validator already on chain is never published again. Apps wait for the
 // Plutus V3 cost model, so nothing is published without one.
-func (p *Pump) publishReferenceScripts(client *NodeClient, batchSize int) {
+func (p *Pump) publishReferenceScripts(client *NodeClient, batchSize int) int {
 	params := scriptParamsFor(p.cfg)
 	if len(params.CostModel) == 0 {
-		return
+		return 0
 	}
+	submitted := 0
 	for _, v := range p.refs.Missing(p.referenceValidators()) {
 		ok, err := p.refs.Publish(
 			v, p.wallet, params, p.currentSlot(), p.cfg.confirmationDelay(),
@@ -379,11 +415,13 @@ func (p *Pump) publishReferenceScripts(client *NodeClient, batchSize int) {
 		)
 		if err != nil {
 			p.logger.Error("reference script publish failed", "script", v.Title, "err", err)
-			return
+			return submitted
 		}
 		if !ok {
-			return
+			return submitted
 		}
+		submitted++
 		p.logger.Info("reference script published", "script", v.Title)
 	}
+	return submitted
 }

@@ -58,6 +58,13 @@ func TestReservedKeyFundsAreNotSelectedByNormalCoinSelection(t *testing.T) {
 	require.ErrorIs(t, err, ErrKeyReserved)
 }
 
+func TestSpendableBalanceExcludesReservedKeyFunds(t *testing.T) {
+	w, pub, _ := reservedWallet()
+	w.ReserveKey(pub)
+	require.EqualValues(t, 10_000_000, w.spendableBalance())
+	require.EqualValues(t, 100_000_000, w.Balance(), "Balance remains the total available wallet balance")
+}
+
 func TestSelectReservedCoinsOnlyTakesTheReservedKeysFunds(t *testing.T) {
 	w, pub, _ := reservedWallet()
 	_, _, err := w.SelectReservedCoins(1_000_000)

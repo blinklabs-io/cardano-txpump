@@ -15,6 +15,7 @@
 package txpump
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -135,6 +136,32 @@ func TestRunStillBatchesUnsignedWalletAfterDisconnectedReconciliationClient(
 		batches,
 		"unsigned wallets must retain their pacing-only batch path",
 	)
+}
+
+func TestRunCountsReferencePublicationForReadiness(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logs bytes.Buffer
+	pump := NewPump(
+		&Config{Types: []string{"payment"}, TxCountMin: 1, TxCountMax: 1},
+		NewWallet(),
+		slog.New(slog.NewTextHandler(&logs, nil)),
+		nil,
+		time.Now().Add(-time.Second),
+	)
+	pump.refs = NewRefScripts()
+	pump.dialPrimaryFn = func() (*NodeClient, error) {
+		return &NodeClient{addr: "test"}, nil
+	}
+	pump.publishReferencesFn = func(*NodeClient, int) int { return 1 }
+	pump.runBatchFn = func(context.Context, *NodeClient, int) int { return 0 }
+	pump.cooldownFn = func(context.Context) bool {
+		cancel()
+		return false
+	}
+
+	require.ErrorIs(t, pump.Run(ctx), context.Canceled)
+	require.Contains(t, logs.String(), "txpump ready")
 }
 
 func TestDeriveTestTxIDUsesCardanoTransactionBodyHash(t *testing.T) {
