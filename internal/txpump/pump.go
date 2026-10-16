@@ -306,17 +306,20 @@ func (p *Pump) reconcilePlutusSnapshot(snapshot []UTxO, presence map[string]bool
 		}
 	}
 
+	pendingInputs := make(map[string]struct{}, len(p.pendingPlutusUnlocks))
 	for txID, pending := range p.pendingPlutusUnlocks {
 		key := utxoKey(pending.locked)
 		if presence[txID] {
 			pending.absentRounds = 0
 			p.pendingPlutusUnlocks[txID] = pending
+			pendingInputs[key] = struct{}{}
 			continue
 		}
 		if _, stillLocked := onChain[key]; stillLocked {
 			pending.absentRounds++
 			if pending.absentRounds < 2 {
 				p.pendingPlutusUnlocks[txID] = pending
+				pendingInputs[key] = struct{}{}
 				continue
 			}
 			if _, exists := known[key]; !exists {
@@ -327,9 +330,23 @@ func (p *Pump) reconcilePlutusSnapshot(snapshot []UTxO, presence map[string]bool
 		delete(p.pendingPlutusUnlocks, txID)
 	}
 
-	// Script outputs have no key credential, so an address query cannot tell
-	// which txpump instance created them. Only retain outputs already tracked
-	// from this process's own accepted lock transactions.
+	// With an explicit user selection, script outputs have no key credential
+	// to distinguish instances, so only locally tracked outputs are safe to
+	// unlock. The default single-instance mode keeps adopting visible outputs
+	// so a process restart can continue unlocking previously created outputs.
+	if p.cfg.Users == nil {
+		for _, utxo := range snapshot {
+			key := utxoKey(utxo)
+			if _, exists := known[key]; exists {
+				continue
+			}
+			if _, unlocking := pendingInputs[key]; unlocking {
+				continue
+			}
+			nextLocked = append(nextLocked, utxo)
+			known[key] = struct{}{}
+		}
+	}
 	p.plutusLocked = nextLocked
 }
 
