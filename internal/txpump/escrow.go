@@ -290,7 +290,7 @@ func (a *escrowApp) initiate(env *AppEnv, params ScriptParams) (bool, error) {
 	}
 	if err := env.Submit("escrow", txID, txBytes); err != nil {
 		env.Wallet.ReturnUTxOs(inputs)
-		env.Logger.Warn("tx rejected", "action", "initiate", "tx_id", txID, "err", err)
+		env.Logger.Debug("tx rejected", "action", "initiate", "tx_id", txID, "err", err)
 		return false, nil
 	}
 	known, err := KnownUTxOsFromTx(txBytes)
@@ -309,7 +309,7 @@ func (a *escrowApp) initiate(env *AppEnv, params ScriptParams) (bool, error) {
 	env.Wallet.RecordAccepted(txID, inputs, []UTxO{{
 		TxHash: txID, Index: 1, Amount: changeOut, SigningKey: user.Key,
 	}}, delay)
-	env.Logger.Info("escrow step", "action", "initiate", "tx_id", txID, "lovelace", amount)
+	env.Logger.Debug("escrow step", "action", "initiate", "tx_id", txID, "lovelace", amount)
 	return true, nil
 }
 
@@ -470,7 +470,7 @@ func (a *escrowApp) spend(env *AppEnv, params ScriptParams, pos *escrowPosition,
 	if err := env.Submit("escrow", txID, txBytes); err != nil {
 		env.Wallet.ReturnUTxOs(append(inputs, collateral...))
 		a.settle(pos, false, nil, true, namesMissingInput(err, pos.utxo.TxHash))
-		env.Logger.Warn("tx rejected", "action", action.String(), "tx_id", txID, "err", err)
+		env.Logger.Debug("tx rejected", "action", action.String(), "tx_id", txID, "err", err)
 		return false, nil
 	}
 	outs, err := KnownUTxOsFromTx(txBytes)
@@ -511,6 +511,6 @@ func (a *escrowApp) spend(env *AppEnv, params ScriptParams, pos *escrowPosition,
 		}
 	}
 	a.settle(pos, true, next, false, false)
-	env.Logger.Info("escrow step", "action", action.String(), "tx_id", txID)
+	env.Logger.Debug("escrow step", "action", action.String(), "tx_id", txID)
 	return true, nil
 }
