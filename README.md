@@ -62,6 +62,10 @@ recovery.
 Submitted and rejected transactions are reported as JSON logs and appended to
 `$TXPUMP_LOG_DIR/txpump.log` (default `/logs/txpump.log`).
 
+Each batch that runs logs one `batch` line at the default `info` level;
+per-transaction detail is in `txpump.log` and, with `TXPUMP_LOG_LEVEL=debug`, on
+standard output. Connection and reconciliation problems are logged on their own. The level is one of `debug`, `info`, `warn` or `error`.
+
 ## Run locally
 
 The txpump process reads its configuration from environment variables. It
