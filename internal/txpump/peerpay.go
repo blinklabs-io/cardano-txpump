@@ -14,7 +14,10 @@
 
 package txpump
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 func init() { RegisterApp("peer_payment", peerPayment{}) }
 
@@ -71,7 +74,7 @@ func (peerPayment) Step(env *AppEnv) (bool, error) {
 	}
 	if err := env.Submit("peer_payment", txID, txBytes); err != nil {
 		env.Wallet.ReturnUTxOs(inputs)
-		env.Logger.Debug("tx rejected", "tx_id", txID, "err", err)
+		env.Logger.Log(context.Background(), submitFailureLevel(err), submitFailureMessage("tx", err), "tx_id", txID, "err", err)
 		return false, nil
 	}
 

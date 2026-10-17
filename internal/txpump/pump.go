@@ -38,16 +38,20 @@ type Pump struct {
 	pendingPlutusUnlocks map[string]pendingPlutusUnlock
 	// users are the identities registered apps act as, one per wallet key.
 	users []*User
+	// primaryDown records that the last primary dial failed, so an outage is
+	// logged once when it starts and once when it ends rather than per batch.
+	primaryDown bool
 	// Credentials (hex key hashes) txpump has registered as stake keys and
 	// DReps, mapped to when the registration is expected on chain, so later
 	// certificates skip the registration deposit.
 	stakeRegistered map[string]time.Time
 	drepRegistered  map[string]time.Time
 	// Hooks keep Run orchestration tests independent of a live node.
-	dialPrimaryFn func() (*NodeClient, error)
-	runBatchFn    func(context.Context, *NodeClient, int) int
-	cooldownFn    func(context.Context) bool
-	intRangeFn    func(int, int) int
+	dialPrimaryFn  func() (*NodeClient, error)
+	dialFallbackFn func() (*NodeClient, error)
+	runBatchFn     func(context.Context, *NodeClient, int) int
+	cooldownFn     func(context.Context) bool
+	intRangeFn     func(int, int) int
 }
 
 type pendingPlutusUnlock struct {
@@ -139,7 +143,15 @@ func (p *Pump) Run(ctx context.Context) error {
 			if !ready && startupExpired(startup, startupDeadline) {
 				return p.readinessTimeoutError()
 			}
-			p.logger.Error(
+			level := slog.LevelDebug
+			firstFailure := !p.primaryDown
+			if firstFailure {
+				level = slog.LevelError
+				p.primaryDown = true
+			}
+			p.logger.Log(
+				ctx,
+				level,
 				"failed to connect to primary node, trying fallback",
 				"primary", p.cfg.NodeAddr,
 				"err", err,
@@ -150,7 +162,13 @@ func (p *Pump) Run(ctx context.Context) error {
 			}
 			client, err = p.dialFallback(dialLimit)
 			if err != nil {
-				p.logger.Error(
+				fallbackLevel := slog.LevelDebug
+				if firstFailure {
+					fallbackLevel = slog.LevelError
+				}
+				p.logger.Log(
+					ctx,
+					fallbackLevel,
 					"fallback connection also failed, skipping batch",
 					"fallback", p.cfg.FallbackAddr,
 					"err", err,
@@ -161,6 +179,10 @@ func (p *Pump) Run(ctx context.Context) error {
 				continue
 			}
 			onFallback = true
+		}
+		if !onFallback && p.primaryDown {
+			p.primaryDown = false
+			p.logger.Info("primary node connection restored", "primary", p.cfg.NodeAddr)
 		}
 		if !ready && startupExpired(startup, startupDeadline) {
 			client.Close() //nolint:errcheck // best-effort close
@@ -407,6 +429,9 @@ func (p *Pump) dialPrimary(timeout time.Duration) (*NodeClient, error) {
 // dialFallback connects to the fallback node address. Returns an error if no
 // fallback is configured.
 func (p *Pump) dialFallback(timeout time.Duration) (*NodeClient, error) {
+	if p.dialFallbackFn != nil {
+		return p.dialFallbackFn()
+	}
 	if p.cfg.FallbackAddr == "" {
 		return nil, errors.New("no fallback node address configured")
 	}
@@ -516,6 +541,14 @@ func (p *Pump) runBatch(
 		default:
 		}
 
+		if client.Broken() {
+			p.logger.Warn(
+				"node connection failed; ending batch",
+				"node", client.Addr(),
+				"submitted", submitted,
+			)
+			return submitted
+		}
 		attempted++
 		txType := active[IntRange(0, len(active)-1)]
 		switch txType {
@@ -606,7 +639,7 @@ func (p *Pump) submitAppTx(
 		Status:    "submitted",
 	}
 	if submitErr != nil {
-		entry.Status = "rejected"
+		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
 	}
 	if p.txlog != nil {
@@ -724,11 +757,11 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 		BatchSize: batchSize,
 	}
 	if submitErr != nil {
-		entry.Status = "rejected"
+		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
 		p.wallet.ReturnUTxOs(inputs)
-		p.logger.Debug(
-			"tx rejected",
+		p.logger.Log(context.Background(), submitFailureLevel(submitErr),
+			submitFailureMessage("tx", submitErr),
 			"tx_id", txID,
 			"err", submitErr,
 		)
@@ -881,10 +914,10 @@ func (p *Pump) submitCertTx(
 		BatchSize: batchSize,
 	}
 	if submitErr != nil {
-		entry.Status = "rejected"
+		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
-		p.logger.Debug(
-			txType+" tx rejected",
+		p.logger.Log(context.Background(), submitFailureLevel(submitErr),
+			submitFailureMessage(txType+" tx", submitErr),
 			"tx_id", txID,
 			"registration", deposit > 0,
 			"err", submitErr,
@@ -1078,9 +1111,9 @@ func (p *Pump) submitPlutusTx(
 		Status:    "submitted",
 	}
 	if submitErr != nil {
-		entry.Status = "rejected"
+		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
-		p.logger.Debug("plutus tx rejected", "kind", kind, "tx_id", txID, "err", submitErr)
+		p.logger.Log(context.Background(), submitFailureLevel(submitErr), submitFailureMessage("plutus tx", submitErr), "kind", kind, "tx_id", txID, "err", submitErr)
 	} else {
 		p.logger.Debug("plutus tx submitted", "kind", kind, "tx_id", txID)
 	}
