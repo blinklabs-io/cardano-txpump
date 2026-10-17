@@ -41,6 +41,10 @@ type Pump struct {
 	// primaryDown records that the last primary dial failed, so an outage is
 	// logged once when it starts and once when it ends rather than per batch.
 	primaryDown bool
+	// fallbackDown is the same record for the fallback node, kept apart
+	// because the fallback can fail on a later batch while the primary is
+	// still down, which is a new full outage.
+	fallbackDown bool
 	// Credentials (hex key hashes) txpump has registered as stake keys and
 	// DReps, mapped to when the registration is expected on chain, so later
 	// certificates skip the registration deposit.
@@ -163,8 +167,9 @@ func (p *Pump) Run(ctx context.Context) error {
 			client, err = p.dialFallback(dialLimit)
 			if err != nil {
 				fallbackLevel := slog.LevelDebug
-				if firstFailure {
+				if !p.fallbackDown {
 					fallbackLevel = slog.LevelError
+					p.fallbackDown = true
 				}
 				p.logger.Log(
 					ctx,
@@ -178,7 +183,10 @@ func (p *Pump) Run(ctx context.Context) error {
 				}
 				continue
 			}
+			p.fallbackDown = false
 			onFallback = true
+		} else {
+			p.fallbackDown = false
 		}
 		if !onFallback && p.primaryDown {
 			p.primaryDown = false
@@ -759,7 +767,9 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 	if submitErr != nil {
 		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
-		p.wallet.ReturnUTxOs(inputs)
+		if !p.retainAmbiguousSubmission(submitErr, txID, inputs, paymentOutputs(txID, sendAmount, change, signingKey)) {
+			p.wallet.ReturnUTxOs(inputs)
+		}
 		p.logger.Log(context.Background(), submitFailureLevel(submitErr),
 			submitFailureMessage("tx", submitErr),
 			"tx_id", txID,
@@ -777,17 +787,7 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 		// Quarantine submitted outputs for the configured confirmation window
 		// so an early fork cannot invalidate an immediate dependency chain.
 		confirmationDelay := p.cfg.confirmationDelay()
-		outputs := make([]UTxO, 0, 2)
-		if signingKey != nil {
-			outputs = append(outputs, UTxO{TxHash: txID, Index: 0, Amount: sendAmount, SigningKey: signingKey})
-		}
-		if change > 0 {
-			changeUTxO := UTxO{TxHash: txID, Index: 1, Amount: change}
-			if signingKey != nil {
-				changeUTxO.SigningKey = signingKey
-			}
-			outputs = append(outputs, changeUTxO)
-		}
+		outputs := paymentOutputs(txID, sendAmount, change, signingKey)
 		p.wallet.RecordAccepted(txID, inputs, outputs, confirmationDelay)
 	}
 
@@ -922,12 +922,16 @@ func (p *Pump) submitCertTx(
 			"registration", deposit > 0,
 			"err", submitErr,
 		)
-		if isRegistered {
-			delete(registered, credID)
-		} else {
-			registered[credID] = time.Now()
+		if submitFailureStatus(submitErr) == "rejected" {
+			if isRegistered {
+				delete(registered, credID)
+			} else {
+				registered[credID] = time.Now()
+			}
 		}
-		p.wallet.ReturnUTxOs(inputs)
+		if !p.retainAmbiguousSubmission(submitErr, txID, inputs, certChangeOutputs(txID, inputs, fee, deposit, credKey)) {
+			p.wallet.ReturnUTxOs(inputs)
+		}
 	} else {
 		entry.Status = "submitted"
 		p.logger.Debug(
@@ -938,16 +942,7 @@ func (p *Pump) submitCertTx(
 		if !isRegistered {
 			registered[credID] = time.Now().Add(p.cfg.confirmationDelay())
 		}
-		var total uint64
-		for _, u := range inputs {
-			total += u.Amount
-		}
-		var outputs []UTxO
-		if change := total - fee - deposit; change > 0 {
-			outputs = []UTxO{{
-				TxHash: txID, Index: 0, Amount: change, SigningKey: credKey,
-			}}
-		}
+		outputs := certChangeOutputs(txID, inputs, fee, deposit, credKey)
 		p.wallet.RecordAccepted(txID, inputs, outputs, p.cfg.confirmationDelay())
 	}
 	if p.txlog != nil {
@@ -1082,6 +1077,62 @@ func (p *Pump) submitPlutusUnlock(client *NodeClient, batchSize int, locked UTxO
 // maxFeeJitter bounds the random fee overpayment added to deterministic
 // workload transactions.
 const maxFeeJitter uint64 = 999_999
+
+// retainAmbiguousSubmission keeps a keyed wallet's reservation for a
+// transaction whose submission failed without a ledger verdict. The node may
+// have accepted it before the connection failed, so releasing its inputs
+// would let the next batch spend them again; wallet reconciliation retires
+// the reservation once the transaction is absent from the node. It reports
+// whether the reservation was kept.
+func (p *Pump) retainAmbiguousSubmission(
+	err error,
+	txID string,
+	inputs, outputs []UTxO,
+) bool {
+	if submitFailureStatus(err) != "error" ||
+		len(p.wallet.SigningAddresses()) == 0 {
+		return false
+	}
+	p.wallet.Reserve(txID, inputs, outputs, p.cfg.confirmationDelay())
+	return true
+}
+
+func paymentOutputs(
+	txID string,
+	sendAmount, change uint64,
+	signingKey *UTxOKey,
+) []UTxO {
+	outputs := make([]UTxO, 0, 2)
+	if signingKey != nil {
+		outputs = append(outputs, UTxO{TxHash: txID, Index: 0, Amount: sendAmount, SigningKey: signingKey})
+	}
+	if change > 0 {
+		changeUTxO := UTxO{TxHash: txID, Index: 1, Amount: change}
+		if signingKey != nil {
+			changeUTxO.SigningKey = signingKey
+		}
+		outputs = append(outputs, changeUTxO)
+	}
+	return outputs
+}
+
+func certChangeOutputs(
+	txID string,
+	inputs []UTxO,
+	fee, deposit uint64,
+	credKey *UTxOKey,
+) []UTxO {
+	var total uint64
+	for _, u := range inputs {
+		total += u.Amount
+	}
+	if change := total - fee - deposit; change > 0 {
+		return []UTxO{{
+			TxHash: txID, Index: 0, Amount: change, SigningKey: credKey,
+		}}
+	}
+	return nil
+}
 
 // jitteredFee overpays base by a random amount below maxFeeJitter lovelace.
 // Certificate and Plutus transactions are otherwise fully determined by their

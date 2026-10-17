@@ -221,3 +221,55 @@ func TestSubmitFailureLevelKeepsTransportFailuresVisible(t *testing.T) {
 		submitFailureLevel(errors.New("protocol is shutting down")),
 	)
 }
+
+// A fallback that fails after having worked is a new full outage and is
+// reported at error level even though the primary stayed down throughout.
+func TestRunLogsAFallbackOutageIndependentlyOfThePrimary(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var buf bytes.Buffer
+	pump := reconnectPump(&Config{StartupTimeout: 0, FallbackAddr: "fallback"})
+	pump.logger = slog.New(slog.NewTextHandler(&buf, nil))
+	pump.dialPrimaryFn = func() (*NodeClient, error) {
+		return nil, errors.New("connection refused")
+	}
+	fallbackDials := 0
+	pump.dialFallbackFn = func() (*NodeClient, error) {
+		fallbackDials++
+		if fallbackDials == 1 {
+			return &NodeClient{addr: "fallback"}, nil
+		}
+		return nil, errors.New("fallback refused")
+	}
+	pump.cooldownFn = func(context.Context) bool {
+		if fallbackDials >= 4 {
+			cancel()
+		}
+		return true
+	}
+	pump.runBatchFn = func(context.Context, *NodeClient, int) int { return 1 }
+
+	require.ErrorIs(t, pump.Run(ctx), context.Canceled)
+	require.Equal(
+		t, 1,
+		strings.Count(buf.String(), "level=ERROR msg=\"fallback connection also failed"),
+	)
+}
+
+// A transport failure says nothing about whether the node took the
+// transaction, so a keyed wallet keeps its inputs reserved for reconciliation
+// instead of offering them to the next batch.
+func TestSubmitPaymentKeepsInputsReservedAfterATransportFailure(t *testing.T) {
+	key := testSigningKey(0x77)
+	pump := reconnectPump(&Config{})
+	pump.wallet = NewWallet()
+	pump.wallet.AddKey(key)
+	pump.wallet.Add(UTxO{
+		TxHash: fmt.Sprintf("%064x", 1), Amount: 20_000_000, SigningKey: key,
+	})
+	require.NotEmpty(t, pump.wallet.SigningAddresses())
+
+	require.False(t, pump.submitPayment(&NodeClient{addr: "dead"}, 1))
+	require.Len(t, pump.wallet.PendingIDs(), 1)
+	require.Zero(t, pump.wallet.Len())
+}
