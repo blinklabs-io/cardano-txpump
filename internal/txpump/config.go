@@ -23,6 +23,7 @@ import (
 	"math"
 	"math/big"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -66,6 +67,11 @@ type Config struct {
 	// Recognised values: "payment", "delegation", "governance", "plutus".
 	// Default: ["payment","delegation","governance","plutus"]
 	Types []string
+
+	// Users restricts the loaded signing keys this instance uses to these
+	// zero-based positions in the sorted genesis.<n>.skey file list. Nil keeps
+	// every key. Instances given disjoint sets never spend each other's UTxOs.
+	Users []UserIndexRange
 
 	// TransactionEra selects the era used for payment transaction encoding.
 	// Conway supports all transaction types; Dijkstra currently supports
@@ -228,6 +234,14 @@ func LoadConfig() (*Config, error) {
 
 	if v := os.Getenv("TXPUMP_TYPES"); v != "" {
 		cfg.Types = splitComma(v)
+	}
+
+	if v := os.Getenv("TXPUMP_USERS"); v != "" {
+		users, err := parseUserIndexes(v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Users = users
 	}
 
 	// Load genesis config if provided. Genesis values override defaults
@@ -512,6 +526,71 @@ func decodeConfiguredHash(
 		)
 	}
 	return decoded, nil
+}
+
+// UserIndexRange represents an inclusive range of user indexes.
+type UserIndexRange struct {
+	First int
+	Last  int
+}
+
+// parseUserIndexes parses a comma-separated list of indexes and inclusive
+// ranges such as "0,2-3" without expanding ranges before the key count is known.
+func parseUserIndexes(value string) ([]UserIndexRange, error) {
+	indexes := make([]UserIndexRange, 0, strings.Count(value, ",")+1)
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		lo, hi, isRange := strings.Cut(part, "-")
+		first, err := parseUserIndex(value, lo)
+		if err != nil {
+			return nil, err
+		}
+		last := first
+		if isRange {
+			if last, err = parseUserIndex(value, hi); err != nil {
+				return nil, err
+			}
+			if last < first {
+				return nil, fmt.Errorf(
+					"TXPUMP_USERS: range %q is reversed in %q", part, value,
+				)
+			}
+		}
+		indexes = append(indexes, UserIndexRange{First: first, Last: last})
+	}
+	sort.Slice(indexes, func(i, j int) bool {
+		if indexes[i].First == indexes[j].First {
+			return indexes[i].Last < indexes[j].Last
+		}
+		return indexes[i].First < indexes[j].First
+	})
+	merged := indexes[:0]
+	for _, indexRange := range indexes {
+		if len(merged) > 0 {
+			previous := &merged[len(merged)-1]
+			if indexRange.First <= previous.Last ||
+				(previous.Last < int(^uint(0)>>1) &&
+					indexRange.First == previous.Last+1) {
+				if indexRange.Last > previous.Last {
+					previous.Last = indexRange.Last
+				}
+				continue
+			}
+		}
+		merged = append(merged, indexRange)
+	}
+	return merged, nil
+}
+
+func parseUserIndex(value, s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf(
+			"TXPUMP_USERS: %q in %q must be a non-negative integer",
+			s, value,
+		)
+	}
+	return n, nil
 }
 
 // ParseLogLevel maps a TXPUMP_LOG_LEVEL value to a slog level. An empty value

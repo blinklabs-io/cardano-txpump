@@ -330,16 +330,22 @@ func (p *Pump) reconcilePlutusSnapshot(snapshot []UTxO, presence map[string]bool
 		delete(p.pendingPlutusUnlocks, txID)
 	}
 
-	for _, utxo := range snapshot {
-		key := utxoKey(utxo)
-		if _, exists := known[key]; exists {
-			continue
+	// With an explicit user selection, script outputs have no key credential
+	// to distinguish instances, so only locally tracked outputs are safe to
+	// unlock. The default single-instance mode keeps adopting visible outputs
+	// so a process restart can continue unlocking previously created outputs.
+	if p.cfg.Users == nil {
+		for _, utxo := range snapshot {
+			key := utxoKey(utxo)
+			if _, exists := known[key]; exists {
+				continue
+			}
+			if _, unlocking := pendingInputs[key]; unlocking {
+				continue
+			}
+			nextLocked = append(nextLocked, utxo)
+			known[key] = struct{}{}
 		}
-		if _, unlocking := pendingInputs[key]; unlocking {
-			continue
-		}
-		nextLocked = append(nextLocked, utxo)
-		known[key] = struct{}{}
 	}
 	p.plutusLocked = nextLocked
 }
