@@ -182,8 +182,17 @@ func (p *Pump) Run(ctx context.Context) error {
 		ids := p.wallet.PendingIDs()
 		addresses := p.wallet.SigningAddresses()
 		scriptAddress := scriptAddressFromHash(alwaysSucceedsScriptHash())
+		var vestingAddress []byte
+		if app, ok := lookupApp("vesting"); ok {
+			if vesting, ok := app.(*vestingApp); ok {
+				vestingAddress = vesting.validator.Address()
+			}
+		}
 		if len(addresses) > 0 {
 			addresses = append(addresses, scriptAddress)
+			if len(vestingAddress) > 0 {
+				addresses = append(addresses, vestingAddress)
+			}
 			// The fallback is a cardano-node, where the mempool cannot be
 			// queried (see ReconcileWallet), so pending reservations are kept
 			// until a batch on the primary observes them.
@@ -212,15 +221,26 @@ func (p *Pump) Run(ctx context.Context) error {
 			}
 			walletSnapshot := make([]UTxO, 0, len(snapshot))
 			plutusSnapshot := make([]UTxO, 0, len(snapshot))
+			vestingSnapshot := make([]UTxO, 0, len(snapshot))
 			for _, utxo := range snapshot {
-				if bytes.Equal(utxo.Address, scriptAddress) {
+				switch {
+				case bytes.Equal(utxo.Address, scriptAddress):
 					plutusSnapshot = append(plutusSnapshot, utxo)
-				} else {
+				case len(vestingAddress) > 0 && bytes.Equal(utxo.Address, vestingAddress):
+					vestingSnapshot = append(vestingSnapshot, utxo)
+				default:
 					walletSnapshot = append(walletSnapshot, utxo)
 				}
 			}
 			p.wallet.ReconcileSnapshot(walletSnapshot, presence)
 			p.reconcilePlutusSnapshot(plutusSnapshot, presence)
+			if app, ok := lookupApp("vesting"); ok {
+				if reconciler, ok := app.(appSnapshotReconciler); ok {
+					if err := reconciler.ReconcileSnapshot(vestingSnapshot, p.users, presence); err != nil {
+						p.logger.Warn("vesting reconciliation failed", "err", err)
+					}
+				}
+			}
 		}
 		submitted := p.runBatch(ctx, client, batchSize)
 		if stopStartupAbort != nil {
