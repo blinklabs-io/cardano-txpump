@@ -15,9 +15,9 @@
 package txpump
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
-	"io"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -44,6 +44,7 @@ type vestingHarness struct {
 	txs    [][]byte
 	reject func(txBytes []byte) error
 	picks  []int
+	logs   bytes.Buffer
 }
 
 func newVestingHarness(t *testing.T) *vestingHarness {
@@ -90,7 +91,7 @@ func (h *vestingHarness) env(user *User) *AppEnv {
 		Wallet: h.wallet,
 		Cfg:    h.cfg,
 		Slot:   h.slot,
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger: slog.New(slog.NewTextHandler(&h.logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		Submit: func(txType, txID string, txBytes []byte) error {
 			require.Equal(h.t, "vesting", txType)
 			if h.reject != nil {
@@ -135,6 +136,20 @@ const (
 func (h *vestingHarness) lock(owner *User) {
 	h.t.Helper()
 	h.step(owner, vestLock, vestingAmountMin, vestLockSlots, 0)
+}
+
+// Per-transaction detail is debug-level, so a run submitting thousands of
+// transactions logs one line per batch at the default level.
+func TestVestingPerTransactionLogsStayBelowInfo(t *testing.T) {
+	h := newVestingHarness(t)
+	owner := h.users[0]
+	h.lock(owner)
+	h.reject = func([]byte) error { return errors.New("mempool full") }
+	h.picks = []int{vestAdvance, 0, vestClawback}
+	ok, err := h.app.Step(h.env(owner))
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Empty(t, h.logs.String())
 }
 
 func TestVestingBeneficiaryWithdrawsAfterLock(t *testing.T) {

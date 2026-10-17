@@ -377,7 +377,7 @@ func (a *vestingApp) lock(env *AppEnv, params ScriptParams) (bool, error) {
 	}
 	if err := env.Submit("vesting", txID, txBytes); err != nil {
 		env.Wallet.ReturnUTxOs(inputs)
-		env.Logger.Warn("tx rejected", "action", "lock", "tx_id", txID, "err", err)
+		env.Logger.Debug("tx rejected", "action", "lock", "tx_id", txID, "err", err)
 		return false, nil
 	}
 	known, err := KnownUTxOsFromTx(txBytes)
@@ -397,7 +397,7 @@ func (a *vestingApp) lock(env *AppEnv, params ScriptParams) (bool, error) {
 	env.Wallet.RecordAccepted(txID, inputs, []UTxO{{
 		TxHash: txID, Index: 1, Amount: changeOut, SigningKey: owner.Key,
 	}}, delay)
-	env.Logger.Info("vesting step", "action", "lock", "tx_id", txID, "lovelace", amount, "lock_until", lockUntil)
+	env.Logger.Debug("vesting step", "action", "lock", "tx_id", txID, "lovelace", amount, "lock_until", lockUntil)
 	return true, nil
 }
 
@@ -447,7 +447,7 @@ func (a *vestingApp) spend(env *AppEnv, params ScriptParams, pos *vestingPositio
 	if err := env.Submit("vesting", txID, txBytes); err != nil {
 		env.Wallet.ReturnUTxOs(collateral)
 		a.settle(pos, false, true, namesMissingInput(err, pos.utxo.TxHash))
-		env.Logger.Warn("tx rejected", "action", action.String(), "tx_id", txID, "err", err)
+		env.Logger.Debug("tx rejected", "action", action.String(), "tx_id", txID, "err", err)
 		return false, nil
 	}
 	// Collateral is not consumed, but it stays reserved with the pending
@@ -458,6 +458,6 @@ func (a *vestingApp) spend(env *AppEnv, params ScriptParams, pos *vestingPositio
 		TxHash: txID, Index: 0, Amount: outs[0].Lovelace, SigningKey: actor.Key,
 	}}, env.Cfg.confirmationDelay())
 	a.markPendingSpend(pos, txID)
-	env.Logger.Info("vesting step", "action", action.String(), "tx_id", txID)
+	env.Logger.Debug("vesting step", "action", action.String(), "tx_id", txID)
 	return true, nil
 }
