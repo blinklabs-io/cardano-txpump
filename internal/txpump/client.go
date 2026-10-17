@@ -62,6 +62,15 @@ func submitFailureMessage(what string, err error) string {
 	return what + " submit failed"
 }
 
+// submitFailureLevel logs a ledger rejection at debug level, like the rest of
+// the per-transaction detail, and a transport failure at warn level.
+func submitFailureLevel(err error) slog.Level {
+	if submitFailureStatus(err) == "rejected" {
+		return slog.LevelDebug
+	}
+	return slog.LevelWarn
+}
+
 // submitFailureStatus names a failed submission in the transaction log: a
 // ledger rejection is data about the transaction, anything else is a
 // transport failure and says nothing about it.

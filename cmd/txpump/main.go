@@ -37,10 +37,15 @@ import (
 )
 
 func main() {
+	level, levelErr := txpump.ParseLogLevel(os.Getenv("TXPUMP_LOG_LEVEL"))
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: level,
 	}))
 	slog.SetDefault(logger)
+	if levelErr != nil {
+		logger.Error("invalid log level", "err", levelErr)
+		os.Exit(1)
+	}
 
 	cfg, err := txpump.LoadConfig()
 	if err != nil {
@@ -73,6 +78,11 @@ func main() {
 		}
 		if len(signingKeys) == 0 {
 			logger.Error("no genesis signing keys found; txpump requires spendable keys")
+			os.Exit(1)
+		}
+		signingKeys, keyErr = txpump.SelectUserKeys(signingKeys, cfg.Users)
+		if keyErr != nil {
+			logger.Error("failed to select users", "err", keyErr)
 			os.Exit(1)
 		}
 		keysByAddress := make(map[string]*txpump.UTxOKey, len(signingKeys))

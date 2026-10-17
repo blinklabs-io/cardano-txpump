@@ -211,3 +211,13 @@ func TestRunLogsAPrimaryOutageOnce(t *testing.T) {
 	)
 	require.Equal(t, 1, strings.Count(out, "primary node connection restored"))
 }
+
+func TestSubmitFailureLevelKeepsTransportFailuresVisible(t *testing.T) {
+	rejected := fmt.Errorf("node: %w", localtxsubmission.TransactionRejectedError{})
+	require.Equal(t, slog.LevelDebug, submitFailureLevel(rejected))
+	require.Equal(
+		t,
+		slog.LevelWarn,
+		submitFailureLevel(errors.New("protocol is shutting down")),
+	)
+}
