@@ -626,7 +626,7 @@ func (p *Pump) runApp(
 }
 
 // submitAppTx submits an app-built transaction and appends it to the
-// transaction log. It returns the node's rejection, if any.
+// transaction log. It returns the submission error, if any.
 func (p *Pump) submitAppTx(
 	client *NodeClient,
 	batchSize int,
@@ -999,8 +999,8 @@ func (p *Pump) submitPlutusLock(client *NodeClient, batchSize int) bool {
 		p.wallet.ReturnUTxOs(inputs)
 		return false
 	}
-	txID, ok := p.submitPlutusTx(client, batchSize, "plutus_lock", txBytes)
-	if !ok {
+	txID, submitErr := p.submitPlutusTx(client, batchSize, "plutus_lock", txBytes)
+	if submitErr != nil && !ambiguousSubmission(p.wallet, submitErr) {
 		p.wallet.ReturnUTxOs(inputs)
 		return false
 	}
@@ -1024,7 +1024,7 @@ func (p *Pump) submitPlutusLock(client *NodeClient, batchSize int) bool {
 		}}
 	}
 	p.wallet.RecordAccepted(txID, inputs, outputs, p.cfg.confirmationDelay())
-	return true
+	return submitErr == nil
 }
 
 func (p *Pump) submitPlutusUnlock(client *NodeClient, batchSize int, locked UTxO) bool {
@@ -1052,8 +1052,8 @@ func (p *Pump) submitPlutusUnlock(client *NodeClient, batchSize int, locked UTxO
 		p.addLockedPlutusUTxO(locked)
 		return false
 	}
-	txID, ok := p.submitPlutusTx(client, batchSize, "plutus_unlock", txBytes)
-	if !ok {
+	txID, submitErr := p.submitPlutusTx(client, batchSize, "plutus_unlock", txBytes)
+	if submitErr != nil && !ambiguousSubmission(p.wallet, submitErr) {
 		// The usual cause is a lock transaction that never reached the chain,
 		// so retrying the same output would only be rejected again. Abandon
 		// it; a still-locked output costs the harness plutusLockAmount.
@@ -1071,7 +1071,7 @@ func (p *Pump) submitPlutusUnlock(client *NodeClient, batchSize int, locked UTxO
 	}
 	p.pendingPlutusUnlocks[txID] = pendingPlutusUnlock{locked: locked}
 	p.wallet.RecordAccepted(txID, collateral, outputs, p.cfg.confirmationDelay())
-	return true
+	return submitErr == nil
 }
 
 // maxFeeJitter bounds the random fee overpayment added to deterministic
@@ -1089,12 +1089,21 @@ func (p *Pump) retainAmbiguousSubmission(
 	txID string,
 	inputs, outputs []UTxO,
 ) bool {
-	if submitFailureStatus(err) != "error" ||
-		len(p.wallet.SigningAddresses()) == 0 {
+	if !ambiguousSubmission(p.wallet, err) {
 		return false
 	}
 	p.wallet.Reserve(txID, inputs, outputs, p.cfg.confirmationDelay())
 	return true
+}
+
+// ambiguousSubmission reports whether a failed submission to a keyed wallet
+// must be booked as if the node had accepted it: without a ledger verdict the
+// transaction may be in the mempool, and reconciliation retires the booking
+// once it is absent. An unkeyed wallet has no reconciliation, so its failures
+// are released as before.
+func ambiguousSubmission(w *Wallet, err error) bool {
+	return err != nil && submitFailureStatus(err) == "error" &&
+		len(w.SigningAddresses()) > 0
 }
 
 func paymentOutputs(
@@ -1144,13 +1153,14 @@ func jitteredFee(base uint64) uint64 {
 	return base + uint64(IntRange(0, int(maxFeeJitter)))
 }
 
-// submitPlutusTx submits a Plutus workload transaction and logs the outcome.
+// submitPlutusTx submits a Plutus workload transaction, logs the outcome and
+// returns the submission error.
 func (p *Pump) submitPlutusTx(
 	client *NodeClient,
 	batchSize int,
 	kind string,
 	txBytes []byte,
-) (string, bool) {
+) (string, error) {
 	txID := deriveTestTxID(txBytes)
 	submitErr := client.SubmitTx(conwayEraID, txBytes)
 	entry := TxLog{
@@ -1173,7 +1183,7 @@ func (p *Pump) submitPlutusTx(
 			p.logger.Error("txlog write failed", "err", logErr)
 		}
 	}
-	return txID, submitErr == nil
+	return txID, submitErr
 }
 
 func (p *Pump) addLockedPlutusUTxO(utxo UTxO) {

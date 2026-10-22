@@ -289,10 +289,13 @@ func (a *escrowApp) initiate(env *AppEnv, params ScriptParams) (bool, error) {
 		env.Wallet.ReturnUTxOs(inputs)
 		return false, fmt.Errorf("escrow initiate: %w", err)
 	}
-	if err := env.Submit("escrow", txID, txBytes); err != nil {
-		env.Wallet.ReturnUTxOs(inputs)
-		env.Logger.Log(context.Background(), submitFailureLevel(err), submitFailureMessage("tx", err), "action", "initiate", "tx_id", txID, "err", err)
-		return false, nil
+	submitErr := env.Submit("escrow", txID, txBytes)
+	if submitErr != nil {
+		env.Logger.Log(context.Background(), submitFailureLevel(submitErr), submitFailureMessage("tx", submitErr), "action", "initiate", "tx_id", txID, "err", submitErr)
+		if !ambiguousSubmission(env.Wallet, submitErr) {
+			env.Wallet.ReturnUTxOs(inputs)
+			return false, nil
+		}
 	}
 	known, err := KnownUTxOsFromTx(txBytes)
 	if err != nil {
@@ -310,6 +313,9 @@ func (a *escrowApp) initiate(env *AppEnv, params ScriptParams) (bool, error) {
 	env.Wallet.RecordAccepted(txID, inputs, []UTxO{{
 		TxHash: txID, Index: 1, Amount: changeOut, SigningKey: user.Key,
 	}}, delay)
+	if submitErr != nil {
+		return false, nil
+	}
 	env.Logger.Debug("escrow step", "action", "initiate", "tx_id", txID, "lovelace", amount)
 	return true, nil
 }
@@ -468,11 +474,14 @@ func (a *escrowApp) spend(env *AppEnv, params ScriptParams, pos *escrowPosition,
 		a.settle(pos, false, nil, true, false)
 		return false, fmt.Errorf("escrow %s: %w", action, err)
 	}
-	if err := env.Submit("escrow", txID, txBytes); err != nil {
-		env.Wallet.ReturnUTxOs(append(inputs, collateral...))
-		a.settle(pos, false, nil, true, namesMissingInput(err, pos.utxo.TxHash))
-		env.Logger.Log(context.Background(), submitFailureLevel(err), submitFailureMessage("tx", err), "action", action.String(), "tx_id", txID, "err", err)
-		return false, nil
+	submitErr := env.Submit("escrow", txID, txBytes)
+	if submitErr != nil {
+		env.Logger.Log(context.Background(), submitFailureLevel(submitErr), submitFailureMessage("tx", submitErr), "action", action.String(), "tx_id", txID, "err", submitErr)
+		if !ambiguousSubmission(env.Wallet, submitErr) {
+			env.Wallet.ReturnUTxOs(append(inputs, collateral...))
+			a.settle(pos, false, nil, true, namesMissingInput(submitErr, pos.utxo.TxHash))
+			return false, nil
+		}
 	}
 	outs, err := KnownUTxOsFromTx(txBytes)
 	if err != nil {
@@ -512,6 +521,9 @@ func (a *escrowApp) spend(env *AppEnv, params ScriptParams, pos *escrowPosition,
 		}
 	}
 	a.settle(pos, true, next, false, false)
+	if submitErr != nil {
+		return false, nil
+	}
 	env.Logger.Debug("escrow step", "action", action.String(), "tx_id", txID)
 	return true, nil
 }

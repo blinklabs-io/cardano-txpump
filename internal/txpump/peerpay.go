@@ -72,12 +72,6 @@ func (peerPayment) Step(env *AppEnv) (bool, error) {
 		env.Wallet.ReturnUTxOs(inputs)
 		return false, err
 	}
-	if err := env.Submit("peer_payment", txID, txBytes); err != nil {
-		env.Wallet.ReturnUTxOs(inputs)
-		env.Logger.Log(context.Background(), submitFailureLevel(err), submitFailureMessage("tx", err), "tx_id", txID, "err", err)
-		return false, nil
-	}
-
 	outputs := []UTxO{{
 		TxHash: txID, Index: 0, Amount: sendAmount, SigningKey: peer.Key,
 	}}
@@ -86,6 +80,14 @@ func (peerPayment) Step(env *AppEnv) (bool, error) {
 			TxHash: txID, Index: 1, Amount: change, SigningKey: env.User.Key,
 		})
 	}
+	submitErr := env.Submit("peer_payment", txID, txBytes)
+	if submitErr != nil {
+		env.Logger.Log(context.Background(), submitFailureLevel(submitErr), submitFailureMessage("tx", submitErr), "tx_id", txID, "err", submitErr)
+		if !ambiguousSubmission(env.Wallet, submitErr) {
+			env.Wallet.ReturnUTxOs(inputs)
+			return false, nil
+		}
+	}
 	env.Wallet.RecordAccepted(txID, inputs, outputs, env.Cfg.confirmationDelay())
-	return true, nil
+	return submitErr == nil, nil
 }
