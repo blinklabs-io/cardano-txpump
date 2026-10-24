@@ -60,6 +60,26 @@ func TestPlanScriptTxDeclaresMeasuredUnitsAndPaysFee(t *testing.T) {
 		"the fee comes out of the change output")
 }
 
+func TestReferenceScriptSizeCountsConsumedScriptOutputs(t *testing.T) {
+	scriptInput := UTxO{TxHash: "script", Index: 0, ScriptRef: []byte{1, 2, 3}}
+	walletInput := UTxO{TxHash: "wallet", Index: 1, ScriptRef: []byte{4, 5}}
+	refInput := UTxO{TxHash: "reference", Index: 2, ScriptRef: []byte{6, 7, 8, 9}}
+	spec := ScriptTxSpec{
+		ScriptInputs: []ScriptInput{{UTxO: scriptInput}},
+		WalletInputs: []UTxO{walletInput, refInput},
+		ReferenceScript: &RefScript{
+			UTxO:   refInput,
+			Script: refInput.ScriptRef,
+		},
+	}
+	require.EqualValues(
+		t,
+		len(scriptInput.ScriptRef)+len(walletInput.ScriptRef)+len(refInput.ScriptRef),
+		spec.referenceScriptSize(),
+		"an input listed as both spent and referenced is counted once",
+	)
+}
+
 func TestPlanScriptTxFailsClosedOnInvalidScript(t *testing.T) {
 	spec, known, _ := escrowInitiationFixture(t)
 	spec.RequiredSigners = nil // cancel unsigned: script fails
@@ -111,7 +131,7 @@ func TestPlanScriptTxFixedFeeAtMinimumPlusSmallMarginIsAccepted(t *testing.T) {
 			Steps:  min(scaleUp(u.Steps), p.MaxTxExUnits.Steps),
 		}
 	}
-	spec.Fee = minFeeFor(len(txBytes), units, p) * 102 / 100
+	spec.Fee = minFeeFor(len(txBytes), units, p, 0) * 102 / 100
 	spec.Outputs[0].Lovelace = 25_000_000 - spec.Fee
 	_, _, err = PlanScriptTx(spec, v, p, known, 100)
 	require.NoError(t, err)

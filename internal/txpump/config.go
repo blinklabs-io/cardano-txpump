@@ -127,6 +127,22 @@ type Config struct {
 	// ScriptParams are the protocol parameters script apps build and verify
 	// transactions against.
 	ScriptParams ScriptParams
+
+	// ReferenceScripts selects where script apps get their validator:
+	// ReferenceScriptsOff carries it in every witness set, On publishes it
+	// once and spends through a reference input, Mixed picks per spend.
+	ReferenceScripts string
+}
+
+// Values of TXPUMP_REFERENCE_SCRIPTS.
+const (
+	ReferenceScriptsOff   = "off"
+	ReferenceScriptsOn    = "on"
+	ReferenceScriptsMixed = "mixed"
+)
+
+func (c *Config) referenceScriptsEnabled() bool {
+	return c != nil && (c.ReferenceScripts == ReferenceScriptsOn || c.ReferenceScripts == ReferenceScriptsMixed)
 }
 
 // LoadConfig reads configuration from environment variables and returns a
@@ -158,7 +174,8 @@ func LoadConfig() (*Config, error) {
 		DelegationPoolKeyHash: envString(
 			"TXPUMP_DELEGATION_POOL_KEY_HASH", "",
 		),
-		EpochLength: 500,
+		EpochLength:      500,
+		ReferenceScripts: envString("TXPUMP_REFERENCE_SCRIPTS", ReferenceScriptsOff),
 	}
 
 	if v := os.Getenv("TXPUMP_NETWORK_MAGIC"); v != "" {
@@ -281,6 +298,13 @@ func LoadConfig() (*Config, error) {
 
 	cfg.ScriptParams = DefaultScriptParams(cfg.PlutusV3CostModel)
 	cfg.ScriptParams.SlotLength = cfg.SlotLength
+	if path := os.Getenv("TXPUMP_CONWAY_GENESIS_FILE"); path != "" {
+		params, loadErr := loadConwayScriptParams(path, cfg.ScriptParams)
+		if loadErr != nil {
+			return nil, fmt.Errorf("TXPUMP_CONWAY_GENESIS_FILE: %w", loadErr)
+		}
+		cfg.ScriptParams = params
+	}
 	if cfg.SystemStartUnix != 0 {
 		cfg.ScriptParams.SystemStart = time.Unix(cfg.SystemStartUnix, 0)
 	}
@@ -354,6 +378,33 @@ func loadAlonzoScriptParams(path string, base ScriptParams) (ScriptParams, error
 	}
 	if g.MaxCollateralInputs != nil {
 		p.MaxCollateralInputs = *g.MaxCollateralInputs
+	}
+	return p, nil
+}
+
+// loadConwayScriptParams overlays the script parameters present in a Conway
+// genesis file on base; absent fields keep base's values.
+func loadConwayScriptParams(path string, base ScriptParams) (ScriptParams, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // trusted config path
+	if err != nil {
+		return ScriptParams{}, err
+	}
+	var g struct {
+		MinFeeRefScriptCostPerByte json.RawMessage `json:"minFeeRefScriptCostPerByte"`
+	}
+	if err := json.Unmarshal(raw, &g); err != nil {
+		return ScriptParams{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	p := base
+	if g.MinFeeRefScriptCostPerByte != nil {
+		cost, err := parseGenesisRat(g.MinFeeRefScriptCostPerByte)
+		if err != nil {
+			return ScriptParams{}, fmt.Errorf("%s: minFeeRefScriptCostPerByte: %w", path, err)
+		}
+		if cost.Sign() < 0 {
+			return ScriptParams{}, fmt.Errorf("%s: minFeeRefScriptCostPerByte must not be negative", path)
+		}
+		p.MinFeeRefScriptCostPerByte = cost
 	}
 	return p, nil
 }
@@ -468,6 +519,14 @@ func (c *Config) validate() error {
 				)
 			}
 		}
+	}
+	switch c.ReferenceScripts {
+	case "", ReferenceScriptsOff, ReferenceScriptsOn, ReferenceScriptsMixed:
+	default:
+		return fmt.Errorf(
+			"TXPUMP_REFERENCE_SCRIPTS must be off, on or mixed, got %q",
+			c.ReferenceScripts,
+		)
 	}
 	if c.DelegationPoolKeyHash != "" {
 		if _, err := decodeConfiguredHash(
