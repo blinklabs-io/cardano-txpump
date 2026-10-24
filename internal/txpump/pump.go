@@ -40,16 +40,24 @@ type Pump struct {
 	users []*User
 	// refs tracks published reference scripts; nil when they are off.
 	refs *RefScripts
+	// primaryDown records that the last primary dial failed, so an outage is
+	// logged once when it starts and once when it ends rather than per batch.
+	primaryDown bool
+	// fallbackDown is the same record for the fallback node, kept apart
+	// because the fallback can fail on a later batch while the primary is
+	// still down, which is a new full outage.
+	fallbackDown bool
 	// Credentials (hex key hashes) txpump has registered as stake keys and
 	// DReps, mapped to when the registration is expected on chain, so later
 	// certificates skip the registration deposit.
 	stakeRegistered map[string]time.Time
 	drepRegistered  map[string]time.Time
 	// Hooks keep Run orchestration tests independent of a live node.
-	dialPrimaryFn func() (*NodeClient, error)
-	runBatchFn    func(context.Context, *NodeClient, int) int
-	cooldownFn    func(context.Context) bool
-	intRangeFn    func(int, int) int
+	dialPrimaryFn  func() (*NodeClient, error)
+	dialFallbackFn func() (*NodeClient, error)
+	runBatchFn     func(context.Context, *NodeClient, int) int
+	cooldownFn     func(context.Context) bool
+	intRangeFn     func(int, int) int
 	// publishReferencesFn overrides reference publication in orchestration tests.
 	publishReferencesFn func(*NodeClient, int) int
 }
@@ -146,7 +154,15 @@ func (p *Pump) Run(ctx context.Context) error {
 			if !ready && startupExpired(startup, startupDeadline) {
 				return p.readinessTimeoutError()
 			}
-			p.logger.Error(
+			level := slog.LevelDebug
+			firstFailure := !p.primaryDown
+			if firstFailure {
+				level = slog.LevelError
+				p.primaryDown = true
+			}
+			p.logger.Log(
+				ctx,
+				level,
 				"failed to connect to primary node, trying fallback",
 				"primary", p.cfg.NodeAddr,
 				"err", err,
@@ -157,7 +173,14 @@ func (p *Pump) Run(ctx context.Context) error {
 			}
 			client, err = p.dialFallback(dialLimit)
 			if err != nil {
-				p.logger.Error(
+				fallbackLevel := slog.LevelDebug
+				if !p.fallbackDown {
+					fallbackLevel = slog.LevelError
+					p.fallbackDown = true
+				}
+				p.logger.Log(
+					ctx,
+					fallbackLevel,
 					"fallback connection also failed, skipping batch",
 					"fallback", p.cfg.FallbackAddr,
 					"err", err,
@@ -167,7 +190,14 @@ func (p *Pump) Run(ctx context.Context) error {
 				}
 				continue
 			}
+			p.fallbackDown = false
 			onFallback = true
+		} else {
+			p.fallbackDown = false
+		}
+		if !onFallback && p.primaryDown {
+			p.primaryDown = false
+			p.logger.Info("primary node connection restored", "primary", p.cfg.NodeAddr)
 		}
 		if !ready && startupExpired(startup, startupDeadline) {
 			client.Close() //nolint:errcheck // best-effort close
@@ -359,16 +389,22 @@ func (p *Pump) reconcilePlutusSnapshot(snapshot []UTxO, presence map[string]bool
 		delete(p.pendingPlutusUnlocks, txID)
 	}
 
-	for _, utxo := range snapshot {
-		key := utxoKey(utxo)
-		if _, exists := known[key]; exists {
-			continue
+	// With an explicit user selection, script outputs have no key credential
+	// to distinguish instances, so only locally tracked outputs are safe to
+	// unlock. The default single-instance mode keeps adopting visible outputs
+	// so a process restart can continue unlocking previously created outputs.
+	if p.cfg.Users == nil {
+		for _, utxo := range snapshot {
+			key := utxoKey(utxo)
+			if _, exists := known[key]; exists {
+				continue
+			}
+			if _, unlocking := pendingInputs[key]; unlocking {
+				continue
+			}
+			nextLocked = append(nextLocked, utxo)
+			known[key] = struct{}{}
 		}
-		if _, unlocking := pendingInputs[key]; unlocking {
-			continue
-		}
-		nextLocked = append(nextLocked, utxo)
-		known[key] = struct{}{}
 	}
 	p.plutusLocked = nextLocked
 }
@@ -430,6 +466,9 @@ func (p *Pump) dialPrimary(timeout time.Duration) (*NodeClient, error) {
 // dialFallback connects to the fallback node address. Returns an error if no
 // fallback is configured.
 func (p *Pump) dialFallback(timeout time.Duration) (*NodeClient, error) {
+	if p.dialFallbackFn != nil {
+		return p.dialFallbackFn()
+	}
 	if p.cfg.FallbackAddr == "" {
 		return nil, errors.New("no fallback node address configured")
 	}
@@ -516,11 +555,22 @@ func (p *Pump) runBatch(
 	active := enabledTypes(
 		p.cfg.Types, epoch, p.cfg.delegationEnabled(), len(p.users),
 	)
+
+	submitted := 0
+	attempted := 0
+	// Per-transaction detail is debug-level and in the transaction log; at
+	// info level a batch is one line, since a run submits thousands.
+	defer func() {
+		p.logger.Info(
+			"batch",
+			"attempted", attempted,
+			"submitted", submitted,
+			"node", client.Addr(),
+		)
+	}()
 	if len(active) == 0 {
 		return 0
 	}
-
-	submitted := 0
 	for i := 0; i < batchSize; i++ {
 		select {
 		case <-ctx.Done():
@@ -528,6 +578,15 @@ func (p *Pump) runBatch(
 		default:
 		}
 
+		if client.Broken() {
+			p.logger.Warn(
+				"node connection failed; ending batch",
+				"node", client.Addr(),
+				"submitted", submitted,
+			)
+			return submitted
+		}
+		attempted++
 		txType := active[IntRange(0, len(active)-1)]
 		switch txType {
 		case "payment":
@@ -549,7 +608,7 @@ func (p *Pump) runBatch(
 		default:
 			app, ok := lookupApp(txType)
 			if !ok {
-				p.logger.Warn(
+				p.logger.Debug(
 					"unknown tx type in config, skipping",
 					"type", txType,
 				)
@@ -597,7 +656,7 @@ func (p *Pump) runApp(
 }
 
 // submitAppTx submits an app-built transaction and appends it to the
-// transaction log. It returns the node's rejection, if any.
+// transaction log. It returns the submission error, if any.
 func (p *Pump) submitAppTx(
 	client *NodeClient,
 	batchSize int,
@@ -618,7 +677,7 @@ func (p *Pump) submitAppTx(
 		Status:    "submitted",
 	}
 	if submitErr != nil {
-		entry.Status = "rejected"
+		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
 	}
 	if p.txlog != nil {
@@ -661,7 +720,7 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 	required := sendAmount + fee
 	inputs, change, err := p.wallet.SelectCoins(required)
 	if err != nil {
-		p.logger.Warn(
+		p.logger.Debug(
 			"coin selection failed",
 			"required_lovelace", required,
 			"err", err,
@@ -669,7 +728,7 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 		return false
 	}
 	if len(inputs) == 0 {
-		p.logger.Warn(
+		p.logger.Debug(
 			"coin selection returned no inputs",
 			"required_lovelace", required,
 		)
@@ -736,11 +795,13 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 		BatchSize: batchSize,
 	}
 	if submitErr != nil {
-		entry.Status = "rejected"
+		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
-		p.wallet.ReturnUTxOs(inputs)
-		p.logger.Warn(
-			"tx rejected",
+		if !p.retainAmbiguousSubmission(submitErr, txID, inputs, paymentOutputs(txID, sendAmount, change, signingKey)) {
+			p.wallet.ReturnUTxOs(inputs)
+		}
+		p.logger.Log(context.Background(), submitFailureLevel(submitErr),
+			submitFailureMessage("tx", submitErr),
 			"tx_id", txID,
 			"err", submitErr,
 		)
@@ -748,7 +809,7 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 		// still-unspent inputs for a later, independently constructed payment.
 	} else {
 		entry.Status = "submitted"
-		p.logger.Info(
+		p.logger.Debug(
 			"tx submitted",
 			"tx_id", txID,
 			"send_lovelace", sendAmount,
@@ -756,17 +817,7 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 		// Quarantine submitted outputs for the configured confirmation window
 		// so an early fork cannot invalidate an immediate dependency chain.
 		confirmationDelay := p.cfg.confirmationDelay()
-		outputs := make([]UTxO, 0, 2)
-		if signingKey != nil {
-			outputs = append(outputs, UTxO{TxHash: txID, Index: 0, Amount: sendAmount, SigningKey: signingKey})
-		}
-		if change > 0 {
-			changeUTxO := UTxO{TxHash: txID, Index: 1, Amount: change}
-			if signingKey != nil {
-				changeUTxO.SigningKey = signingKey
-			}
-			outputs = append(outputs, changeUTxO)
-		}
+		outputs := paymentOutputs(txID, sendAmount, change, signingKey)
 		p.wallet.RecordAccepted(txID, inputs, outputs, confirmationDelay)
 	}
 
@@ -840,7 +891,7 @@ func (p *Pump) submitCertTx(
 	baseRequired := fee + minSendAmount
 	inputs, change, err := p.wallet.SelectCoins(baseRequired)
 	if err != nil {
-		p.logger.Warn(
+		p.logger.Debug(
 			"coin selection failed",
 			"tx_type", txType,
 			"required_lovelace", baseRequired,
@@ -863,7 +914,7 @@ func (p *Pump) submitCertTx(
 			extraInputs, _, selectErr := p.wallet.SelectCoins(missingDeposit)
 			if selectErr != nil {
 				p.wallet.ReturnUTxOs(inputs)
-				p.logger.Warn(
+				p.logger.Debug(
 					"coin selection failed for registration deposit",
 					"tx_type", txType,
 					"required_lovelace", missingDeposit,
@@ -893,23 +944,27 @@ func (p *Pump) submitCertTx(
 		BatchSize: batchSize,
 	}
 	if submitErr != nil {
-		entry.Status = "rejected"
+		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
-		p.logger.Warn(
-			txType+" tx rejected",
+		p.logger.Log(context.Background(), submitFailureLevel(submitErr),
+			submitFailureMessage(txType+" tx", submitErr),
 			"tx_id", txID,
 			"registration", deposit > 0,
 			"err", submitErr,
 		)
-		if isRegistered {
-			delete(registered, credID)
-		} else {
-			registered[credID] = time.Now()
+		if submitFailureStatus(submitErr) == "rejected" {
+			if isRegistered {
+				delete(registered, credID)
+			} else {
+				registered[credID] = time.Now()
+			}
 		}
-		p.wallet.ReturnUTxOs(inputs)
+		if !p.retainAmbiguousSubmission(submitErr, txID, inputs, certChangeOutputs(txID, inputs, fee, deposit, credKey)) {
+			p.wallet.ReturnUTxOs(inputs)
+		}
 	} else {
 		entry.Status = "submitted"
-		p.logger.Info(
+		p.logger.Debug(
 			txType+" tx submitted",
 			"tx_id", txID,
 			"registration", deposit > 0,
@@ -917,16 +972,7 @@ func (p *Pump) submitCertTx(
 		if !isRegistered {
 			registered[credID] = time.Now().Add(p.cfg.confirmationDelay())
 		}
-		var total uint64
-		for _, u := range inputs {
-			total += u.Amount
-		}
-		var outputs []UTxO
-		if change := total - fee - deposit; change > 0 {
-			outputs = []UTxO{{
-				TxHash: txID, Index: 0, Amount: change, SigningKey: credKey,
-			}}
-		}
+		outputs := certChangeOutputs(txID, inputs, fee, deposit, credKey)
 		p.wallet.RecordAccepted(txID, inputs, outputs, p.cfg.confirmationDelay())
 	}
 	if p.txlog != nil {
@@ -959,7 +1005,7 @@ func (p *Pump) submitPlutusLock(client *NodeClient, batchSize int) bool {
 	required := plutusLockAmount + fee + minSendAmount
 	inputs, _, err := p.wallet.SelectCoins(required)
 	if err != nil {
-		p.logger.Warn(
+		p.logger.Debug(
 			"coin selection failed for plutus",
 			"kind", "plutus_lock",
 			"required_lovelace", required,
@@ -968,7 +1014,7 @@ func (p *Pump) submitPlutusLock(client *NodeClient, batchSize int) bool {
 		return false
 	}
 	if len(inputs) == 0 {
-		p.logger.Warn(
+		p.logger.Debug(
 			"coin selection returned no inputs for plutus lock",
 			"required_lovelace", required,
 		)
@@ -983,8 +1029,8 @@ func (p *Pump) submitPlutusLock(client *NodeClient, batchSize int) bool {
 		p.wallet.ReturnUTxOs(inputs)
 		return false
 	}
-	txID, ok := p.submitPlutusTx(client, batchSize, "plutus_lock", txBytes)
-	if !ok {
+	txID, submitErr := p.submitPlutusTx(client, batchSize, "plutus_lock", txBytes)
+	if submitErr != nil && !ambiguousSubmission(p.wallet, submitErr) {
 		p.wallet.ReturnUTxOs(inputs)
 		return false
 	}
@@ -1008,7 +1054,7 @@ func (p *Pump) submitPlutusLock(client *NodeClient, batchSize int) bool {
 		}}
 	}
 	p.wallet.RecordAccepted(txID, inputs, outputs, p.cfg.confirmationDelay())
-	return true
+	return submitErr == nil
 }
 
 func (p *Pump) submitPlutusUnlock(client *NodeClient, batchSize int, locked UTxO) bool {
@@ -1018,7 +1064,7 @@ func (p *Pump) submitPlutusUnlock(client *NodeClient, batchSize int, locked UTxO
 		if err == nil {
 			p.wallet.ReturnUTxOs(collateral)
 		}
-		p.logger.Warn("no key-locked collateral for plutus unlock", "err", err)
+		p.logger.Debug("no key-locked collateral for plutus unlock", "err", err)
 		p.addLockedPlutusUTxO(locked)
 		return false
 	}
@@ -1036,8 +1082,8 @@ func (p *Pump) submitPlutusUnlock(client *NodeClient, batchSize int, locked UTxO
 		p.addLockedPlutusUTxO(locked)
 		return false
 	}
-	txID, ok := p.submitPlutusTx(client, batchSize, "plutus_unlock", txBytes)
-	if !ok {
+	txID, submitErr := p.submitPlutusTx(client, batchSize, "plutus_unlock", txBytes)
+	if submitErr != nil && !ambiguousSubmission(p.wallet, submitErr) {
 		// The usual cause is a lock transaction that never reached the chain,
 		// so retrying the same output would only be rejected again. Abandon
 		// it; a still-locked output costs the harness plutusLockAmount.
@@ -1055,12 +1101,77 @@ func (p *Pump) submitPlutusUnlock(client *NodeClient, batchSize int, locked UTxO
 	}
 	p.pendingPlutusUnlocks[txID] = pendingPlutusUnlock{locked: locked}
 	p.wallet.RecordAccepted(txID, collateral, outputs, p.cfg.confirmationDelay())
-	return true
+	return submitErr == nil
 }
 
 // maxFeeJitter bounds the random fee overpayment added to deterministic
 // workload transactions.
 const maxFeeJitter uint64 = 999_999
+
+// retainAmbiguousSubmission keeps a keyed wallet's reservation for a
+// transaction whose submission failed without a ledger verdict. The node may
+// have accepted it before the connection failed, so releasing its inputs
+// would let the next batch spend them again; wallet reconciliation retires
+// the reservation once the transaction is absent from the node. It reports
+// whether the reservation was kept.
+func (p *Pump) retainAmbiguousSubmission(
+	err error,
+	txID string,
+	inputs, outputs []UTxO,
+) bool {
+	if !ambiguousSubmission(p.wallet, err) {
+		return false
+	}
+	p.wallet.Reserve(txID, inputs, outputs, p.cfg.confirmationDelay())
+	return true
+}
+
+// ambiguousSubmission reports whether a failed submission to a keyed wallet
+// must be booked as if the node had accepted it: without a ledger verdict the
+// transaction may be in the mempool, and reconciliation retires the booking
+// once it is absent. An unkeyed wallet has no reconciliation, so its failures
+// are released as before.
+func ambiguousSubmission(w *Wallet, err error) bool {
+	return err != nil && submitFailureStatus(err) == "error" &&
+		len(w.SigningAddresses()) > 0
+}
+
+func paymentOutputs(
+	txID string,
+	sendAmount, change uint64,
+	signingKey *UTxOKey,
+) []UTxO {
+	outputs := make([]UTxO, 0, 2)
+	if signingKey != nil {
+		outputs = append(outputs, UTxO{TxHash: txID, Index: 0, Amount: sendAmount, SigningKey: signingKey})
+	}
+	if change > 0 {
+		changeUTxO := UTxO{TxHash: txID, Index: 1, Amount: change}
+		if signingKey != nil {
+			changeUTxO.SigningKey = signingKey
+		}
+		outputs = append(outputs, changeUTxO)
+	}
+	return outputs
+}
+
+func certChangeOutputs(
+	txID string,
+	inputs []UTxO,
+	fee, deposit uint64,
+	credKey *UTxOKey,
+) []UTxO {
+	var total uint64
+	for _, u := range inputs {
+		total += u.Amount
+	}
+	if change := total - fee - deposit; change > 0 {
+		return []UTxO{{
+			TxHash: txID, Index: 0, Amount: change, SigningKey: credKey,
+		}}
+	}
+	return nil
+}
 
 // jitteredFee overpays base by a random amount below maxFeeJitter lovelace.
 // Certificate and Plutus transactions are otherwise fully determined by their
@@ -1072,13 +1183,14 @@ func jitteredFee(base uint64) uint64 {
 	return base + uint64(IntRange(0, int(maxFeeJitter)))
 }
 
-// submitPlutusTx submits a Plutus workload transaction and logs the outcome.
+// submitPlutusTx submits a Plutus workload transaction, logs the outcome and
+// returns the submission error.
 func (p *Pump) submitPlutusTx(
 	client *NodeClient,
 	batchSize int,
 	kind string,
 	txBytes []byte,
-) (string, bool) {
+) (string, error) {
 	txID := deriveTestTxID(txBytes)
 	submitErr := client.SubmitTx(conwayEraID, txBytes)
 	entry := TxLog{
@@ -1090,18 +1202,18 @@ func (p *Pump) submitPlutusTx(
 		Status:    "submitted",
 	}
 	if submitErr != nil {
-		entry.Status = "rejected"
+		entry.Status = submitFailureStatus(submitErr)
 		entry.ErrorMsg = submitErr.Error()
-		p.logger.Warn("plutus tx rejected", "kind", kind, "tx_id", txID, "err", submitErr)
+		p.logger.Log(context.Background(), submitFailureLevel(submitErr), submitFailureMessage("plutus tx", submitErr), "kind", kind, "tx_id", txID, "err", submitErr)
 	} else {
-		p.logger.Info("plutus tx submitted", "kind", kind, "tx_id", txID)
+		p.logger.Debug("plutus tx submitted", "kind", kind, "tx_id", txID)
 	}
 	if p.txlog != nil {
 		if logErr := p.txlog.Log(entry); logErr != nil {
 			p.logger.Error("txlog write failed", "err", logErr)
 		}
 	}
-	return txID, submitErr == nil
+	return txID, submitErr
 }
 
 func (p *Pump) addLockedPlutusUTxO(utxo UTxO) {

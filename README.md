@@ -30,7 +30,9 @@ The workload types exercise different ledger paths:
 - `governance` registers or updates a DRep credential, starting in epoch 2.
 - `plutus` locks ADA at an always-succeeds Plutus V3 script and can later spend
   that output; it starts in epoch 3 and needs the network's Plutus V3 cost
-  model to unlock outputs.
+  model to unlock outputs. With `TXPUMP_USERS` set, each process unlocks only
+  script outputs it created during that run. Without a selection, the process
+  adopts visible script outputs so a restart can continue unlocking them.
 - `peer_payment` pays ADA from one genesis-keyed user to another, so outputs
   change owner. It does nothing when the wallet holds a single key.
 - `escrow` has two users trade ADA through the cardano-templates escrow
@@ -46,8 +48,29 @@ Each genesis signing key is one user. Registered apps such as `peer_payment`
 run as a randomly chosen user each time; `payment` and the other core types
 continue to draw from the whole wallet.
 
-Submitted and rejected transactions are reported as JSON logs and appended to
-`$TXPUMP_LOG_DIR/txpump.log` (default `/logs/txpump.log`).
+`TXPUMP_USERS` limits an instance to some of the loaded keys, so several
+instances sharing one devnet can use disjoint keys and never spend the same
+UTxOs. It takes zero-based positions and inclusive ranges, such as `0,2-3`,
+into the `genesis.<n>.skey` files sorted by file name (so `genesis.10` sorts
+before `genesis.2`). UTxOs of unselected keys are ignored for every type.
+Startup fails on a malformed value, a position past the last key, or a
+range ending past the last key. Ranges are kept compact until they are checked
+against the loaded key count. Apps that need several users, such as
+`peer_payment`, count only the selected ones. `plutus` outputs share a script
+address, so selected instances track only outputs they created during their
+current run; the default unselected mode adopts visible outputs for restart
+recovery.
+
+Every submission is reported as a JSON line appended to
+`$TXPUMP_LOG_DIR/txpump.log` (default `/logs/txpump.log`). Its `status` is
+`submitted` when the node accepted the transaction, `rejected` when the ledger
+rejected it, and `error` when the connection failed before the node answered.
+An `error` submission may still have reached the node, so with signing keys its
+inputs stay reserved until wallet reconciliation finds the transaction absent.
+
+Each batch that runs logs one `batch` line at the default `info` level;
+per-transaction detail is in `txpump.log` and, with `TXPUMP_LOG_LEVEL=debug`, on
+standard output. Connection and reconciliation problems are logged on their own. The level is one of `debug`, `info`, `warn` or `error`.
 
 ## Run locally
 
@@ -128,6 +151,7 @@ cannot find spendable UTxOs matched to signing keys.
 | `TXPUMP_GENESIS_UTXO_FILE` | unset | Initial UTxOs and the directory containing their signing keys. Required for a funded run. |
 | `TXPUMP_GENESIS_FILE` | unset | Testnet spec or Shelley genesis JSON for epoch, slot, and system-start parameters. YAML specs need a resolved `systemStartUnix`. |
 | `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types: the four core types plus registered apps (`peer_payment`, `escrow`). |
+| `TXPUMP_USERS` | unset (all keys) | Signing keys this instance uses, as positions or ranges such as `0,2-3`. |
 | `TXPUMP_TRANSACTION_ERA` | `conway` | `conway` supports all workload types; `dijkstra` supports payments only. |
 | `TXPUMP_TX_COUNT_MIN` / `TXPUMP_TX_COUNT_MAX` | `1` / `10` | Minimum and maximum transactions per batch. |
 | `TXPUMP_COOLDOWN_MIN` / `TXPUMP_COOLDOWN_MAX` | `500` / `2000` | Minimum and maximum delay between batches, in milliseconds. |

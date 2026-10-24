@@ -1,6 +1,6 @@
-FROM ghcr.io/blinklabs-io/cardano-cli:11.2.3.1-1 AS cardano-cli
+FROM ghcr.io/blinklabs-io/cardano-cli:11.4.0.0-2 AS cardano-cli
 
-FROM ghcr.io/blinklabs-io/go:1.26.7-1 AS build
+FROM ghcr.io/blinklabs-io/go:1.27.3-1 AS build
 
 WORKDIR /code
 RUN go env -w GOCACHE=/go-cache

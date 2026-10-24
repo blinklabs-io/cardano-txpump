@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
-	"errors"
 	"io"
 	"log/slog"
 	"strconv"
@@ -203,7 +202,7 @@ func TestEscrowRejectionNamingMissingInputDropsPosition(t *testing.T) {
 	pos := h.app.positions[0]
 	balance := h.wallet.Balance()
 
-	h.reject = func([]byte) error { return errors.New("mempool full") }
+	h.reject = func([]byte) error { return ledgerRejection("mempool full") }
 	h.picks = []int{pickAdvance, 0, pickProceed, escrowAmountMin}
 	ok, err := h.app.Step(h.env(recipient))
 	require.NoError(t, err)
@@ -213,7 +212,7 @@ func TestEscrowRejectionNamingMissingInputDropsPosition(t *testing.T) {
 	require.Equal(t, balance, h.wallet.Balance(), "wallet inputs and collateral are returned")
 
 	h.reject = func([]byte) error {
-		return errors.New("ConwayUtxowFailure (UtxoFailure (BadInputsUTxO (fromList [TxIn (TxId {unTxId = \"" + pos.utxo.TxHash + "\"}) (TxIx 0)])))")
+		return ledgerRejection("ConwayUtxowFailure (UtxoFailure (BadInputsUTxO (fromList [TxIn (TxId {unTxId = \"" + pos.utxo.TxHash + "\"}) (TxIx 0)])))")
 	}
 	h.picks = []int{pickAdvance, 0, pickProceed, escrowAmountMin}
 	ok, err = h.app.Step(h.env(recipient))
@@ -227,7 +226,7 @@ func TestEscrowRepeatedRejectionsDropPosition(t *testing.T) {
 	h := newEscrowHarness(t)
 	initiator, recipient := h.users[0], h.users[1]
 	h.step(initiator, pickInitiate, escrowAmountMin)
-	h.reject = func([]byte) error { return errors.New("unrecognised failure") }
+	h.reject = func([]byte) error { return ledgerRejection("unrecognised failure") }
 	for i := 0; i < escrowMaxRejections; i++ {
 		require.Len(t, h.app.positions, 1, "attempt %d", i)
 		h.picks = []int{pickAdvance, 0, pickProceed, escrowAmountMin}
