@@ -41,6 +41,13 @@ The workload types exercise different ledger paths:
   runs from epoch 3. Every script transaction is planned from measured
   execution units and checked offline against the Conway ledger rules and the
   Plutus evaluator; a transaction that fails that check is not submitted.
+- `vesting` has one user lock ADA at the cardano-templates vesting validator
+  for another. The beneficiary withdraws once the lock time has passed, using a
+  validity range that starts strictly after it, and the owner may claw the
+  value back at any time. It needs at least two keys, the Plutus V3 cost model
+  and the genesis system start (`systemStartUnix` or Shelley genesis), because
+  the lock time is POSIX milliseconds. It runs from epoch 3 and its
+  transactions are verified offline like escrow's.
 
 Each genesis signing key is one user. Registered apps such as `peer_payment`
 run as a randomly chosen user each time; `payment` and the other core types
@@ -144,7 +151,7 @@ cannot find spendable UTxOs matched to signing keys.
 | `TXPUMP_NETWORK_MAGIC` | `42` | Network magic; read from `TXPUMP_GENESIS_FILE` when unset. |
 | `TXPUMP_GENESIS_UTXO_FILE` | unset | Initial UTxOs and the directory containing their signing keys. Required for a funded run. |
 | `TXPUMP_GENESIS_FILE` | unset | Testnet spec or Shelley genesis JSON for epoch, slot, and system-start parameters. YAML specs need a resolved `systemStartUnix`. |
-| `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types: the four core types plus registered apps (`peer_payment`, `escrow`). |
+| `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types: the four core types plus registered apps (`peer_payment`, `escrow`, `vesting`). |
 | `TXPUMP_USERS` | unset (all keys) | Signing keys this instance uses, as positions or ranges such as `0,2-3`. |
 | `TXPUMP_TRANSACTION_ERA` | `conway` | `conway` supports all workload types; `dijkstra` supports payments only. |
 | `TXPUMP_TX_COUNT_MIN` / `TXPUMP_TX_COUNT_MAX` | `1` / `10` | Minimum and maximum transactions per batch. |

@@ -16,6 +16,7 @@ package txpump
 
 import (
 	"bytes"
+	"math/big"
 	"testing"
 
 	"github.com/blinklabs-io/gouroboros/ledger/common"
@@ -85,4 +86,25 @@ func TestPlutusAddressDataMatchesAddressForm(t *testing.T) {
 		_, err := plutusAddressData(addr)
 		require.Error(t, err, name)
 	}
+}
+
+func TestVestingDataConstructors(t *testing.T) {
+	owner := bytes.Repeat([]byte{0x11}, 28)
+	beneficiary := bytes.Repeat([]byte{0x22}, 28)
+
+	datum, err := encodePlutusData(vestingDatum(1_672_843_961_000, owner, beneficiary))
+	require.NoError(t, err)
+	// VestingDatum is a single-constructor record: Constr 0 of three fields.
+	require.True(t, bytes.HasPrefix(datum, []byte{0xd8, 0x79, 0x9f}))
+	back, err := data.Decode(datum)
+	require.NoError(t, err)
+	require.True(t, back.Equal(data.NewConstr(0,
+		data.NewInteger(big.NewInt(1_672_843_961_000)),
+		data.NewByteString(owner),
+		data.NewByteString(beneficiary),
+	)))
+
+	rd, err := encodePlutusData(vestingRedeemer())
+	require.NoError(t, err)
+	require.Equal(t, []byte{0xd8, 0x79, 0x80}, rd, "the validator ignores the redeemer; Void is Constr 0 with no fields")
 }

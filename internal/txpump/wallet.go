@@ -32,6 +32,7 @@ type UTxO struct {
 	SigningKey *UTxOKey // optional: Ed25519 key for signing inputs from this UTxO
 	// Address associates an explicit UTxO-list entry with its signing key.
 	Address     []byte
+	InlineDatum []byte
 	availableAt time.Time
 }
 
