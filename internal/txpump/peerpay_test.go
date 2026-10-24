@@ -17,7 +17,6 @@ package txpump
 import (
 	"bytes"
 	"crypto/ed25519"
-	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -117,7 +116,7 @@ func TestPeerPaymentReturnsInputsOnRejection(t *testing.T) {
 	w := fundedWallet(100_000_000, 100_000_000, ka, kb)
 	users := usersFromWallet(w)
 	env := peerEnv(w, users, func(string, string, []byte) error {
-		return errors.New("rejected")
+		return ledgerRejection("rejected")
 	})
 
 	ok, err := peerPayment{}.Step(env)
