@@ -3,7 +3,7 @@ module github.com/blinklabs-io/cardano-txpump
 go 1.26.10
 
 require (
-	github.com/blinklabs-io/gouroboros v0.212.1
+	github.com/blinklabs-io/gouroboros v0.213.9
 	github.com/blinklabs-io/plutigo v0.9.10
 	github.com/stretchr/testify v1.12.1
 	gopkg.in/yaml.v3 v3.0.1
