@@ -101,10 +101,38 @@ func TestSplitReferenceSnapshotKeepsReferenceOutputsOutOfTheWallet(t *testing.T)
 	wallet, refs := splitReferenceSnapshot(snapshot, pub)
 	require.Len(t, refs, 1)
 	require.Equal(t, "a", refs[0].TxHash)
-	require.Len(t, wallet, 2)
-	for _, u := range wallet {
-		require.Nil(t, u.ScriptRef)
+	require.Equal(t, []UTxO{snapshot[1]}, wallet)
+}
+
+func TestApplySnapshotExcludesForeignReferenceOutputsWhenDisabled(t *testing.T) {
+	key := escrowTestKey(1)
+	wallet := NewWallet()
+	wallet.AddKey(key)
+	p := NewPump(
+		&Config{ReferenceScripts: ReferenceScriptsOff},
+		wallet,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		nil,
+		time.Now(),
+	)
+	plain := UTxO{
+		TxHash:  strings.Repeat("01", 32),
+		Amount:  5_000_000,
+		Address: key.Address,
 	}
+	withReference := UTxO{
+		TxHash:    strings.Repeat("02", 32),
+		Amount:    50_000_000,
+		Address:   key.Address,
+		ScriptRef: []byte{1},
+	}
+
+	p.applySnapshot([]UTxO{plain, withReference}, nil, []byte{0x70})
+
+	require.Equal(t, uint64(5_000_000), p.wallet.Balance())
+	selected, _, err := p.wallet.SelectCoins(1)
+	require.NoError(t, err)
+	require.Equal(t, plain.TxHash, selected[0].TxHash)
 }
 
 func TestReferenceValidatorsAreThoseOfEnabledReferenceApps(t *testing.T) {

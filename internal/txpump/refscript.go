@@ -357,15 +357,17 @@ func (p *Pump) setupReferenceScripts() error {
 }
 
 // splitReferenceSnapshot separates the publisher's reference-script outputs
-// from the rest of snapshot. They must never reach the wallet, where coin
-// selection could spend them; every other output has its script dropped.
+// from plain wallet outputs. Reference-script outputs at other addresses are
+// excluded because the general transaction builders do not account for their
+// ledger fee when spending them.
 func splitReferenceSnapshot(snapshot []UTxO, publisher []byte) (rest, refs []UTxO) {
 	for _, u := range snapshot {
-		if len(u.ScriptRef) > 0 && bytes.Equal(u.Address, publisher) {
-			refs = append(refs, u)
+		if len(u.ScriptRef) > 0 {
+			if len(publisher) > 0 && bytes.Equal(u.Address, publisher) {
+				refs = append(refs, u)
+			}
 			continue
 		}
-		u.ScriptRef = nil
 		rest = append(rest, u)
 	}
 	return rest, refs

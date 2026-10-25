@@ -327,9 +327,11 @@ func startupDialTimeout(ready bool, deadline time.Time) time.Duration {
 // the registry, never to the wallet.
 func (p *Pump) applySnapshot(snapshot []UTxO, presence map[string]bool, scriptAddress []byte) {
 	var refSnapshot []UTxO
+	var publisher []byte
 	if pub := p.wallet.ReservedKey(); p.refs != nil && pub != nil {
-		snapshot, refSnapshot = splitReferenceSnapshot(snapshot, pub.Address)
+		publisher = pub.Address
 	}
+	snapshot, refSnapshot = splitReferenceSnapshot(snapshot, publisher)
 	walletSnapshot := make([]UTxO, 0, len(snapshot))
 	plutusSnapshot := make([]UTxO, 0, len(snapshot))
 	for _, utxo := range snapshot {
