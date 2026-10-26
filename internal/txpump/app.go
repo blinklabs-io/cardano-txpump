@@ -67,10 +67,6 @@ type gatedApp interface {
 	Enabled(users int) bool
 }
 
-type appSnapshotReconciler interface {
-	ReconcileSnapshot([]UTxO, []*User, map[string]bool) error
-}
-
 func appEnabled(app App, users int) bool {
 	g, ok := app.(gatedApp)
 	return !ok || g.Enabled(users)

@@ -87,6 +87,16 @@ func (p *Pump) Run(ctx context.Context) error {
 	if p.users == nil && p.wallet != nil {
 		p.users = usersFromWallet(p.wallet)
 	}
+	var vesting *vestingApp
+	for _, txType := range p.cfg.Types {
+		if txType != "vesting" {
+			continue
+		}
+		if app, ok := lookupApp(txType); ok {
+			vesting, _ = app.(*vestingApp)
+		}
+		break
+	}
 	var startupTimer *time.Timer
 	var startup <-chan time.Time
 	var startupDeadline time.Time
@@ -183,10 +193,8 @@ func (p *Pump) Run(ctx context.Context) error {
 		addresses := p.wallet.SigningAddresses()
 		scriptAddress := scriptAddressFromHash(alwaysSucceedsScriptHash())
 		var vestingAddress []byte
-		if app, ok := lookupApp("vesting"); ok {
-			if vesting, ok := app.(*vestingApp); ok {
-				vestingAddress = vesting.validator.Address()
-			}
+		if vesting != nil {
+			vestingAddress = vesting.validator.Address()
 		}
 		if len(addresses) > 0 {
 			addresses = append(addresses, scriptAddress)
@@ -234,11 +242,9 @@ func (p *Pump) Run(ctx context.Context) error {
 			}
 			p.wallet.ReconcileSnapshot(walletSnapshot, presence)
 			p.reconcilePlutusSnapshot(plutusSnapshot, presence)
-			if app, ok := lookupApp("vesting"); ok {
-				if reconciler, ok := app.(appSnapshotReconciler); ok {
-					if err := reconciler.ReconcileSnapshot(vestingSnapshot, p.users, presence); err != nil {
-						p.logger.Warn("vesting reconciliation failed", "err", err)
-					}
+			if vesting != nil {
+				if err := vesting.ReconcileSnapshot(vestingSnapshot, p.users, presence); err != nil {
+					p.logger.Warn("vesting reconciliation failed", "err", err)
 				}
 			}
 		}

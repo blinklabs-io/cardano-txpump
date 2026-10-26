@@ -76,6 +76,7 @@ type vestingPosition struct {
 	busy         bool
 	rejections   int
 	pendingSpend string
+	absentRounds int
 }
 
 // vestingApp locks ADA for a beneficiary through the vesting template: the
@@ -116,6 +117,22 @@ func (a *vestingApp) Enabled(users int) bool { return users >= 2 }
 // value the script sees as a transaction's inclusive lower bound.
 func slotMillis(p ScriptParams, slot uint64) int64 {
 	return p.SystemStart.Add(time.Duration(slot) * p.SlotLength).UnixMilli() //nolint:gosec // devnet slots are small
+}
+
+// firstSlotAfter returns the earliest nonzero slot at or below upper whose
+// start time is strictly after millis. Slot zero represents an omitted lower
+// bound in ScriptTxSpec. Callers ensure upper itself meets the condition.
+func firstSlotAfter(p ScriptParams, upper uint64, millis int64) uint64 {
+	low := uint64(1)
+	for low < upper {
+		mid := low + (upper-low)/2
+		if slotMillis(p, mid) > millis {
+			upper = mid
+		} else {
+			low = mid + 1
+		}
+	}
+	return low
 }
 
 func (a *vestingApp) Step(env *AppEnv) (bool, error) {
@@ -230,6 +247,7 @@ func (a *vestingApp) ReconcileSnapshot(
 		utxo, exists := onChain[key]
 		if pos.pendingSpend != "" {
 			if presence[pos.pendingSpend] {
+				pos.absentRounds = 0
 				pos.busy = false
 				positions = append(positions, pos)
 				known[key] = struct{}{}
@@ -238,7 +256,15 @@ func (a *vestingApp) ReconcileSnapshot(
 			if !exists {
 				continue
 			}
+			pos.absentRounds++
+			if pos.absentRounds < 2 {
+				pos.busy = false
+				positions = append(positions, pos)
+				known[key] = struct{}{}
+				continue
+			}
 			pos.pendingSpend = ""
+			pos.absentRounds = 0
 			pos.busy = false
 		}
 		if !exists && !presence[pos.utxo.TxHash] {
@@ -336,6 +362,7 @@ func (a *vestingApp) markPendingSpend(pos *vestingPosition, txID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	pos.pendingSpend = txID
+	pos.absentRounds = 0
 	pos.busy = false
 }
 
@@ -417,8 +444,9 @@ func (a *vestingApp) spend(env *AppEnv, params ScriptParams, pos *vestingPositio
 	}
 	if action == vestingWithdraw {
 		// The validator wants a lower bound strictly after lock_until; the
-		// bound is the current slot, which claim already checked.
-		spec.ValidityStart = env.Slot
+		// earliest valid slot avoids asking the mempool to accept a wall-clock
+		// slot that is still ahead of the node tip.
+		spec.ValidityStart = firstSlotAfter(params, env.Slot, pos.lockUntil)
 	}
 	collateral, _, err := env.Wallet.SelectCoinsForKey(actor.Key, vestingCollateral)
 	if err != nil || uint(len(collateral)) > params.MaxCollateralInputs { //nolint:gosec // small slice

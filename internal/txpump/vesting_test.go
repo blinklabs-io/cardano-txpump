@@ -219,6 +219,10 @@ func TestVestingReconstructsAndRestoresPendingPosition(t *testing.T) {
 	require.NoError(t, h.app.ReconcileSnapshot(
 		[]UTxO{snapshot}, h.users, map[string]bool{tx.Hash().String(): false},
 	))
+	require.Equal(t, tx.Hash().String(), h.app.positions[0].pendingSpend)
+	require.NoError(t, h.app.ReconcileSnapshot(
+		[]UTxO{snapshot}, h.users, map[string]bool{tx.Hash().String(): false},
+	))
 	require.Len(t, h.app.positions, 1, "a dropped spend restores its still-unspent input")
 	require.Empty(t, h.app.positions[0].pendingSpend)
 	require.False(t, h.app.positions[0].busy)
@@ -239,6 +243,20 @@ func TestVestingBeneficiaryWaitsPastTheLockInstant(t *testing.T) {
 	h.slot = vestingTestStart + vestingLockMinSlots
 	h.step(beneficiary, vestAdvance, vestingAmountMin, vestLockSlots, 0)
 	require.Len(t, h.app.positions, 2, "no withdraw at the lock instant")
+}
+
+func TestVestingWithdrawUsesFirstValidLowerBound(t *testing.T) {
+	h := newVestingHarness(t)
+	owner, beneficiary := h.users[0], h.users[1]
+	h.lock(owner)
+
+	h.slot = vestingTestStart + vestingLockMinSlots + 10
+	tx := h.step(beneficiary, vestAdvance, 0)
+	require.Equal(
+		t,
+		uint64(vestingTestStart+vestingLockMinSlots+1),
+		tx.ValidityIntervalStart(),
+	)
 }
 
 func TestVestingOwnerClawsBackBeforeLock(t *testing.T) {
