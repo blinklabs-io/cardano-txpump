@@ -66,8 +66,12 @@ address, so selected instances track only outputs they created during their
 current run; the default unselected mode adopts visible outputs for restart
 recovery.
 
-Submitted and rejected transactions are reported as JSON logs and appended to
-`$TXPUMP_LOG_DIR/txpump.log` (default `/logs/txpump.log`).
+Every submission is reported as a JSON line appended to
+`$TXPUMP_LOG_DIR/txpump.log` (default `/logs/txpump.log`). Its `status` is
+`submitted` when the node accepted the transaction, `rejected` when the ledger
+rejected it, and `error` when the connection failed before the node answered.
+An `error` submission may still have reached the node, so with signing keys its
+inputs stay reserved until wallet reconciliation finds the transaction absent.
 
 Each batch that runs logs one `batch` line at the default `info` level;
 per-transaction detail is in `txpump.log` and, with `TXPUMP_LOG_LEVEL=debug`, on

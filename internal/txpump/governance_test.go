@@ -52,7 +52,7 @@ func TestBuildDRepRegistrationTx_RegistersAndSigns(t *testing.T) {
 	cert, ok := certs[0].(*common.RegistrationDrepCertificate)
 	require.True(t, ok, "DRep registration must use certificate type 16, got %T", certs[0])
 	require.Equal(t, drepHash, cert.DrepCredential.Credential.Bytes())
-	require.Equal(t, int64(drepDeposit), cert.Amount)
+	require.Equal(t, uint64(drepDeposit), cert.Amount)
 	outputs := tx.Outputs()
 	require.Len(t, outputs, 1)
 	require.Equal(t, uint64(600_000_000)-MinFee-drepDeposit, outputs[0].Amount().Uint64())
