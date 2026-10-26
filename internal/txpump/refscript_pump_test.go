@@ -132,6 +132,7 @@ func TestApplySnapshotExcludesForeignReferenceOutputsWhenDisabled(t *testing.T) 
 	require.Equal(t, uint64(5_000_000), p.wallet.Balance())
 	selected, _, err := p.wallet.SelectCoins(1)
 	require.NoError(t, err)
+	require.Len(t, selected, 1)
 	require.Equal(t, plain.TxHash, selected[0].TxHash)
 }
 
