@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/blinklabs-io/gouroboros/cbor"
@@ -95,16 +96,7 @@ func (p *Pump) Run(ctx context.Context) error {
 	if p.users == nil && p.wallet != nil {
 		p.users = usersFromWallet(p.wallet)
 	}
-	var vesting *vestingApp
-	for _, txType := range p.cfg.Types {
-		if txType != "vesting" {
-			continue
-		}
-		if app, ok := lookupApp(txType); ok {
-			vesting, _ = app.(*vestingApp)
-		}
-		break
-	}
+	vesting := p.vestingWorkload()
 	var startupTimer *time.Timer
 	var startup <-chan time.Time
 	var startupDeadline time.Time
@@ -617,6 +609,22 @@ func (p *Pump) runBatch(
 		}
 	}
 	return submitted
+}
+
+// vestingWorkload returns the vesting app only when vesting is a configured
+// workload type. The app is registered unconditionally, so without this gate
+// every instance would query and reconcile the vesting address, and foreign
+// outputs at the shared template address would be reported on every batch.
+func (p *Pump) vestingWorkload() *vestingApp {
+	if !slices.Contains(p.cfg.Types, "vesting") {
+		return nil
+	}
+	app, ok := lookupApp("vesting")
+	if !ok {
+		return nil
+	}
+	vesting, _ := app.(*vestingApp)
+	return vesting
 }
 
 // runApp runs one step of a registered app as a randomly chosen user.
