@@ -51,9 +51,14 @@ func TestBatchLogsOneInfoLineNotOnePerTransaction(t *testing.T) {
 	pump.runBatch(context.Background(), &NodeClient{addr: "dead"}, 20)
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	require.Len(t, lines, 1, buf.String())
-	require.Contains(t, lines[0], `"msg":"batch"`)
-	require.Contains(t, lines[0], `"attempted"`)
+	// The dead node fails the first submission, which is warned about once
+	// and ends the batch, so 20 queued transactions cost 3 lines, not 20.
+	require.Len(t, lines, 3, buf.String())
+	require.Contains(t, lines[0], `"msg":"tx submit failed"`)
+	require.Contains(t, lines[1], `"msg":"node connection failed; ending batch"`)
+	last := lines[len(lines)-1]
+	require.Contains(t, last, `"msg":"batch"`)
+	require.Contains(t, last, `"attempted":1`)
 }
 
 // A batch with no enabled type still logs its summary, so an idle pump is
