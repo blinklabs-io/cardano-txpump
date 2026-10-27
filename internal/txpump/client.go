@@ -305,14 +305,19 @@ func (c *NodeClient) ReconcileWallet(
 			)
 		}
 		amount := output.Amount()
+		var inlineDatum []byte
+		if datum := output.Datum(); datum != nil {
+			inlineDatum = append([]byte(nil), datum.Cbor()...)
+		}
 		snapshot = append(
 			snapshot,
 			UTxO{
 				TxHash: id.Hash.String(),
 				//nolint:gosec // ledger index is bounded by protocol
-				Index:   uint32(id.Idx),
-				Amount:  amount.Uint64(),
-				Address: raw,
+				Index:       uint32(id.Idx),
+				Amount:      amount.Uint64(),
+				Address:     raw,
+				InlineDatum: inlineDatum,
 			},
 		)
 	}

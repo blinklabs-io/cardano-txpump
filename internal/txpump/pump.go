@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/blinklabs-io/gouroboros/cbor"
@@ -95,6 +96,7 @@ func (p *Pump) Run(ctx context.Context) error {
 	if p.users == nil && p.wallet != nil {
 		p.users = usersFromWallet(p.wallet)
 	}
+	vesting := p.vestingWorkload()
 	var startupTimer *time.Timer
 	var startup <-chan time.Time
 	var startupDeadline time.Time
@@ -212,8 +214,15 @@ func (p *Pump) Run(ctx context.Context) error {
 		ids := p.wallet.PendingIDs()
 		addresses := p.wallet.SigningAddresses()
 		scriptAddress := scriptAddressFromHash(alwaysSucceedsScriptHash())
+		var vestingAddress []byte
+		if vesting != nil {
+			vestingAddress = vesting.validator.Address()
+		}
 		if len(addresses) > 0 {
 			addresses = append(addresses, scriptAddress)
+			if len(vestingAddress) > 0 {
+				addresses = append(addresses, vestingAddress)
+			}
 			// The fallback is a cardano-node, where the mempool cannot be
 			// queried (see ReconcileWallet), so pending reservations are kept
 			// until a batch on the primary observes them.
@@ -242,15 +251,24 @@ func (p *Pump) Run(ctx context.Context) error {
 			}
 			walletSnapshot := make([]UTxO, 0, len(snapshot))
 			plutusSnapshot := make([]UTxO, 0, len(snapshot))
+			vestingSnapshot := make([]UTxO, 0, len(snapshot))
 			for _, utxo := range snapshot {
-				if bytes.Equal(utxo.Address, scriptAddress) {
+				switch {
+				case bytes.Equal(utxo.Address, scriptAddress):
 					plutusSnapshot = append(plutusSnapshot, utxo)
-				} else {
+				case len(vestingAddress) > 0 && bytes.Equal(utxo.Address, vestingAddress):
+					vestingSnapshot = append(vestingSnapshot, utxo)
+				default:
 					walletSnapshot = append(walletSnapshot, utxo)
 				}
 			}
 			p.wallet.ReconcileSnapshot(walletSnapshot, presence)
 			p.reconcilePlutusSnapshot(plutusSnapshot, presence)
+			if vesting != nil {
+				if err := vesting.ReconcileSnapshot(vestingSnapshot, p.users, presence); err != nil {
+					p.logger.Warn("vesting reconciliation failed", "err", err)
+				}
+			}
 		}
 		submitted := p.runBatch(ctx, client, batchSize)
 		if stopStartupAbort != nil {
@@ -591,6 +609,22 @@ func (p *Pump) runBatch(
 		}
 	}
 	return submitted
+}
+
+// vestingWorkload returns the vesting app only when vesting is a configured
+// workload type. The app is registered unconditionally, so without this gate
+// every instance would query and reconcile the vesting address, and foreign
+// outputs at the shared template address would be reported on every batch.
+func (p *Pump) vestingWorkload() *vestingApp {
+	if !slices.Contains(p.cfg.Types, "vesting") {
+		return nil
+	}
+	app, ok := lookupApp("vesting")
+	if !ok {
+		return nil
+	}
+	vesting, _ := app.(*vestingApp)
+	return vesting
 }
 
 // runApp runs one step of a registered app as a randomly chosen user.
