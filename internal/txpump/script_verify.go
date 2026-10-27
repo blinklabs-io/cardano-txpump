@@ -221,7 +221,10 @@ func stubFor(known []KnownUTxO, p ScriptParams) (*stubLedger, error) {
 		if _, err := cbor.Decode(raw, &o); err != nil {
 			return nil, fmt.Errorf("known utxo %q: %w", k.Ref, err)
 		}
-		id := shelley.NewShelleyTransactionInput(hash, int(idx))
+		id, err := shelley.NewShelleyTransactionInput(hash, int(idx))
+		if err != nil {
+			return nil, fmt.Errorf("known utxo %q: %w", k.Ref, err)
+		}
 		ls.utxos[id.String()] = common.Utxo{Id: id, Output: &o}
 	}
 	return ls, nil

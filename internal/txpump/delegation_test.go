@@ -101,7 +101,7 @@ func TestBuildDelegationTx_RegistersAndSigns(t *testing.T) {
 	require.True(t, ok, "registration delegation must use certificate type 11, got %T", certs[0])
 	require.Equal(t, stakeHash, cert.StakeCredential.Credential.Bytes())
 	require.Equal(t, samplePoolKeyHash, cert.PoolKeyHash.Bytes())
-	require.Equal(t, int64(stakeKeyDeposit), cert.Amount)
+	require.Equal(t, uint64(stakeKeyDeposit), cert.Amount)
 	outputs := tx.Outputs()
 	require.Len(t, outputs, 1)
 	require.Equal(t, uint64(5_000_000)-MinFee-stakeKeyDeposit, outputs[0].Amount().Uint64())

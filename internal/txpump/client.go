@@ -312,6 +312,9 @@ func (c *NodeClient) ReconcileWallet(
 			Amount:  amount.Uint64(),
 			Address: raw,
 		}
+		if datum := output.Datum(); datum != nil {
+			utxo.InlineDatum = append([]byte(nil), datum.Cbor()...)
+		}
 		if s := output.ScriptRef(); s != nil {
 			if v, ok := common.PlutusScriptVersion(s); ok && v == 2 {
 				utxo.ScriptRef = append([]byte(nil), s.RawScriptBytes()...)

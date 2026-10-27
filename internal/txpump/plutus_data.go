@@ -95,3 +95,16 @@ func escrowCancelRedeemer() data.PlutusData { return data.NewConstr(1) }
 func escrowCompleteRedeemer() data.PlutusData { return data.NewConstr(2) }
 
 func encodePlutusData(pd data.PlutusData) ([]byte, error) { return data.Encode(pd) }
+
+// vestingDatum is the template's VestingDatum record. lockUntil is POSIX
+// milliseconds.
+func vestingDatum(lockUntil int64, owner, beneficiary []byte) data.PlutusData {
+	return data.NewConstr(0,
+		data.NewInteger(big.NewInt(lockUntil)),
+		data.NewByteString(owner),
+		data.NewByteString(beneficiary),
+	)
+}
+
+// vestingRedeemer is Void: the validator ignores its redeemer.
+func vestingRedeemer() data.PlutusData { return data.NewConstr(0) }

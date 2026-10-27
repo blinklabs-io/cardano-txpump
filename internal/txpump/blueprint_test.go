@@ -34,6 +34,13 @@ func TestLoadValidatorEscrow(t *testing.T) {
 	require.Equal(t, v.Hash, addr[1:])
 }
 
+func TestLoadValidatorVesting(t *testing.T) {
+	v, err := LoadValidator("vesting.json", "vesting.vesting.spend")
+	require.NoError(t, err)
+	require.Equal(t, "0e1470667b6c1ad3fb65e4cccfbfd8dd1d687be97a4192c05b8521a4", hex.EncodeToString(v.Hash))
+	require.Equal(t, common.PlutusV3Script(v.Code).Hash().Bytes(), v.Hash)
+}
+
 func TestLoadValidatorRejectsUnknownTitleAndFile(t *testing.T) {
 	_, err := LoadValidator("escrow.json", "nope")
 	require.Error(t, err)

@@ -127,7 +127,7 @@ func TestApplySnapshotExcludesForeignReferenceOutputsWhenDisabled(t *testing.T) 
 		ScriptRef: []byte{1},
 	}
 
-	p.applySnapshot([]UTxO{plain, withReference}, nil, []byte{0x70})
+	p.applySnapshot([]UTxO{plain, withReference}, nil, []byte{0x70}, nil)
 
 	require.Equal(t, uint64(5_000_000), p.wallet.Balance())
 	selected, _, err := p.wallet.SelectCoins(1)
@@ -164,7 +164,7 @@ func TestApplySnapshotRoutesReferenceOutputsToTheRegistryOnly(t *testing.T) {
 		{TxHash: strings.Repeat("0a", 32), Index: 0, Amount: 16_000_000, Address: pub.Address, ScriptRef: v.Code},
 		{TxHash: strings.Repeat("0a", 32), Index: 1, Amount: 30_000_000, Address: pub.Address},
 	}
-	p.applySnapshot(snapshot, nil, []byte{0x70})
+	p.applySnapshot(snapshot, nil, []byte{0x70}, nil)
 
 	ref, ok := p.refs.Lookup(v.Hash)
 	require.True(t, ok)

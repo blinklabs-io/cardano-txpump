@@ -219,3 +219,14 @@ func TestDeriveTestTxIDUsesCardanoTransactionBodyHash(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, tx.Hash().String(), deriveTestTxID(txBytes))
 }
+
+// TestVestingWorkloadFollowsConfiguredTypes keeps the always-registered
+// vesting app out of reconciliation unless vesting is a configured type.
+func TestVestingWorkloadFollowsConfiguredTypes(t *testing.T) {
+	pump := testPump(time.Now(), 0)
+	pump.cfg.Types = []string{"payment", "plutus"}
+	require.Nil(t, pump.vestingWorkload())
+
+	pump.cfg.Types = []string{"payment", "vesting"}
+	require.NotNil(t, pump.vestingWorkload())
+}
