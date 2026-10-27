@@ -338,15 +338,16 @@ func (p *Pump) setupReferenceScripts() error {
 	userCount := len(keys) - 1
 	for _, name := range p.cfg.Types {
 		app, ok := lookupApp(name)
-		if !ok {
+		if !ok || appEnabled(app, userCount) {
 			continue
 		}
-		if _, usesReferenceScripts := app.(refScriptApp); !usesReferenceScripts {
-			continue
-		}
-		if !appEnabled(app, userCount) {
+		// The publisher is withheld from every workload. A reference-script
+		// workload needs its users regardless; any other workload is refused
+		// only when the reservation is what disables it.
+		if _, usesReferenceScripts := app.(refScriptApp); usesReferenceScripts ||
+			appEnabled(app, len(keys)) {
 			return fmt.Errorf(
-				"TXPUMP_REFERENCE_SCRIPTS=%s needs enough wallet keys for reference workload %q; found %d",
+				"TXPUMP_REFERENCE_SCRIPTS=%s needs enough wallet keys for workload %q besides the publisher; found %d",
 				p.cfg.ReferenceScripts, name, len(keys),
 			)
 		}

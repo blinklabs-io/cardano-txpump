@@ -194,8 +194,9 @@ as a reference input instead of carrying the validator in the witness set.
 The wallet key that sorts last by address owns the published scripts. It is
 not a user and no other workload selects its funds, so the outputs are never
 spent by normal traffic. It needs funds of its own, a run needs at least two
-keys (three for `escrow`, which needs two users besides the publisher), and
-txpump refuses to start otherwise. In `on` mode a script spend waits until its
+keys, and every enabled workload needs its users besides the publisher
+(three keys for `escrow` or `vesting`, which each need two users); txpump
+refuses to start otherwise. In `on` mode a script spend waits until its
 reference is on chain; in `mixed` mode it falls back to the witness set.
 
 Nothing about published scripts is remembered between runs. Each round txpump

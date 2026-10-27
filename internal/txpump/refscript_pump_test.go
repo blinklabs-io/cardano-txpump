@@ -91,6 +91,21 @@ func TestSetupReferenceScriptsRequiresTwoEscrowUsers(t *testing.T) {
 	require.NoError(t, p.setupReferenceScripts(), "non-reference workloads retain the two-key minimum")
 }
 
+// Reserving the publisher takes a key away from every workload, not only the
+// reference-script ones, so a two-key vesting run must be refused rather than
+// silently disabled.
+func TestSetupReferenceScriptsRefusesWorkloadsTheReservationDisables(t *testing.T) {
+	p := newRefPump(t, ReferenceScriptsOn, escrowTestKey(1), escrowTestKey(2))
+	p.cfg.Types = []string{"payment", "vesting"}
+	require.ErrorContains(t, p.setupReferenceScripts(), "vesting")
+	require.Nil(t, p.wallet.ReservedKey())
+
+	p = newRefPump(t, ReferenceScriptsOn, escrowTestKey(1), escrowTestKey(2), escrowTestKey(3))
+	p.cfg.Types = []string{"payment", "vesting"}
+	require.NoError(t, p.setupReferenceScripts())
+	require.Len(t, usersFromWallet(p.wallet), 2)
+}
+
 func TestSplitReferenceSnapshotKeepsReferenceOutputsOutOfTheWallet(t *testing.T) {
 	pub, other := []byte{0x60, 1}, []byte{0x60, 2}
 	snapshot := []UTxO{
