@@ -210,6 +210,7 @@ func clearTxpumpEnv(t *testing.T) {
 		"TXPUMP_CONWAY_GENESIS_FILE",
 		"TXPUMP_ALONZO_GENESIS_FILE",
 		"TXPUMP_DELEGATION_POOL_KEY_HASH",
+		"TXPUMP_REFERENCE_SCRIPTS",
 	} {
 		t.Setenv(key, "")
 	}

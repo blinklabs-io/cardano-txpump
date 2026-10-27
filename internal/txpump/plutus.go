@@ -75,10 +75,13 @@ func scriptAddressFromHash(scriptHash []byte) []byte {
 // Key 0 = address
 // Key 1 = value (lovelace only)
 // Key 2 = datum_option ([1, #6.24(datum)] for an inline datum)
+// Key 3 = script_ref
 type plutusOutput struct {
 	Address     []byte `cbor:"0,keyasint"`
 	Amount      uint64 `cbor:"1,keyasint"`
 	DatumOption []any  `cbor:"2,keyasint,omitempty"`
+	// ScriptRef is a script_ref, #6.24(bytes .cbor [language, script]).
+	ScriptRef any `cbor:"3,keyasint,omitempty"`
 }
 
 // txBodyPlutus is a Conway transaction body for the Plutus workload.

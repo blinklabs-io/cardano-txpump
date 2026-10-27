@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"io"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -475,4 +476,35 @@ func TestVestingKeepsCollateralReservedUntilReconciled(t *testing.T) {
 		found = found || utxoKey(u) == ref
 	}
 	require.True(t, found, "reconciliation releases unspent collateral")
+}
+
+// applySnapshot hands vesting outputs to the vesting app and keeps them out of
+// the wallet, while an output carrying a reference script at the vesting
+// address is dropped before it reaches either.
+func TestApplySnapshotRoutesVestingOutputs(t *testing.T) {
+	h := newVestingHarness(t)
+	h.lock(h.users[0])
+	locked := h.app.positions[0]
+	addr := h.app.validator.Address()
+	datum := append([]byte(nil), locked.known[0].Datum...)
+	position := UTxO{
+		TxHash: locked.utxo.TxHash, Index: locked.utxo.Index,
+		Amount: locked.utxo.Amount, Address: addr, InlineDatum: datum,
+	}
+	withRef := UTxO{
+		TxHash: strings.Repeat("0b", 32), Index: 0,
+		Amount: locked.utxo.Amount, Address: addr, InlineDatum: datum,
+		ScriptRef: []byte{1},
+	}
+
+	restarted, err := newVestingApp()
+	require.NoError(t, err)
+	p := NewPump(&Config{Types: []string{"vesting"}}, NewWallet(),
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil, time.Now())
+	p.users = h.users
+	p.applySnapshot([]UTxO{position, withRef}, nil, []byte{0x70}, restarted)
+
+	require.Len(t, restarted.positions, 1)
+	require.Equal(t, utxoKey(position), utxoKey(restarted.positions[0].utxo))
+	require.Zero(t, p.wallet.Balance(), "vesting outputs are not wallet funds")
 }

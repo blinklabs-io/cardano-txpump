@@ -53,6 +53,7 @@ type escrowHarness struct {
 	txs    [][]byte
 	reject func(txBytes []byte) error
 	picks  []int
+	refs   *RefScripts
 }
 
 func newEscrowHarness(t *testing.T) *escrowHarness {
@@ -93,6 +94,7 @@ func (h *escrowHarness) env(user *User) *AppEnv {
 		Users:  h.users,
 		Wallet: h.wallet,
 		Cfg:    h.cfg,
+		Refs:   h.refs,
 		Slot:   3 * 500,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Submit: func(txType, txID string, txBytes []byte) error {

@@ -124,6 +124,12 @@ func mustNewEscrowApp() *escrowApp {
 	return a
 }
 
+// ReferenceValidators lists the validators the app can spend through a
+// published reference script.
+func (a *escrowApp) ReferenceValidators() []PlutusV3Validator {
+	return []PlutusV3Validator{a.validator}
+}
+
 // Enabled reports whether there is a second user to trade with.
 func (a *escrowApp) Enabled(users int) bool { return users >= 2 }
 
@@ -365,7 +371,7 @@ func buildEscrowLock(
 		if err != nil {
 			return nil, "", 0, err
 		}
-		need := minFeeFor(len(txBytes), common.ExUnits{}, params)
+		need := minFeeFor(len(txBytes), common.ExUnits{}, params, 0)
 		if need <= fee {
 			bodyBytes, err := cbor.Encode(body)
 			if err != nil {
@@ -378,8 +384,34 @@ func buildEscrowLock(
 	return nil, "", 0, errors.New("escrow_lock: fee did not converge")
 }
 
+// scriptSource reports whether this spend uses the published reference
+// script, and which. Mixed mode draws its choice before looking for the
+// reference, so the number of draws does not depend on what is published.
+func (a *escrowApp) scriptSource(env *AppEnv) (RefScript, bool) {
+	mode := env.Cfg.ReferenceScripts
+	if mode != ReferenceScriptsOn && mode != ReferenceScriptsMixed {
+		return RefScript{}, false
+	}
+	preferWitness := mode == ReferenceScriptsMixed && a.choose(0, 1) == 1
+	if env.Refs == nil {
+		return RefScript{}, false
+	}
+	ref, ok := env.Refs.Lookup(a.validator.Hash)
+	if !ok || preferWitness {
+		return RefScript{}, false
+	}
+	return ref, true
+}
+
 func (a *escrowApp) spend(env *AppEnv, params ScriptParams, pos *escrowPosition, action escrowAction) (bool, error) {
 	actor := env.User
+	ref, useRef := a.scriptSource(env)
+	if env.Cfg.ReferenceScripts == ReferenceScriptsOn && !useRef {
+		// The reference is published asynchronously; waiting is not a
+		// failure of the position.
+		a.settle(pos, false, nil, false, false)
+		return false, nil
+	}
 	initAddr, err := plutusAddressData(pos.initiator.Key.Address)
 	if err != nil {
 		a.settle(pos, false, nil, true, false)
@@ -468,6 +500,10 @@ func (a *escrowApp) spend(env *AppEnv, params ScriptParams, pos *escrowPosition,
 	spec.Collateral = collateral
 
 	known := append(append([]KnownUTxO(nil), pos.known...), walletKnown(inputs, collateral)...)
+	if useRef {
+		spec.ReferenceScript = &ref
+		known = append(known, ref.Known())
+	}
 	txBytes, txID, err := PlanScriptTx(spec, NewVerifier(params), params, known, env.Slot)
 	if err != nil {
 		env.Wallet.ReturnUTxOs(append(inputs, collateral...))

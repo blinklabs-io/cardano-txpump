@@ -20,7 +20,9 @@ import (
 	"math"
 	"math/big"
 
+	"github.com/blinklabs-io/gouroboros/cbor"
 	"github.com/blinklabs-io/gouroboros/ledger/common"
+	"github.com/blinklabs-io/gouroboros/ledger/conway"
 )
 
 // declaredUnitsMargin is the headroom declared over measured execution units
@@ -97,7 +99,8 @@ func PlanScriptTx(spec ScriptTxSpec, v *Verifier, p ScriptParams, known []KnownU
 	// Every rebuild recomputes the script data hash over the declared units
 	// and re-signs the new body.
 	var txID string
-	fee := minFeeFor(len(txBytes), spec.ExUnits, p) * 11 / 10
+	refSize := spec.referenceScriptSize()
+	fee := minFeeFor(len(txBytes), spec.ExUnits, p, refSize) * 11 / 10
 	if spec.ChangeIndex < 0 {
 		// The caller's fee is final; Verify enforces the minimum.
 		fee = spec.Fee
@@ -109,7 +112,7 @@ func PlanScriptTx(spec ScriptTxSpec, v *Verifier, p ScriptParams, known []KnownU
 		if txBytes, txID, err = BuildScriptTx(spec); err != nil {
 			return nil, "", err
 		}
-		need := minFeeFor(len(txBytes), spec.ExUnits, p)
+		need := minFeeFor(len(txBytes), spec.ExUnits, p, refSize)
 		if spec.ChangeIndex < 0 || need <= fee {
 			if _, err := v.Verify(txBytes, known, slot); err != nil {
 				return nil, "", err
@@ -121,6 +124,32 @@ func PlanScriptTx(spec ScriptTxSpec, v *Verifier, p ScriptParams, known []KnownU
 	return nil, "", errors.New("plan: fee did not converge")
 }
 
+// referenceScriptSize is the byte size of reference scripts on the transaction's
+// inputs and reference inputs, each distinct output counted once.
+func (s ScriptTxSpec) referenceScriptSize() uint64 {
+	consumed := make(map[string]uint64, len(s.ScriptInputs)+len(s.WalletInputs)+1)
+	add := func(u UTxO, script []byte) {
+		if len(script) == 0 {
+			return
+		}
+		consumed[utxoKey(u)] = uint64(len(script))
+	}
+	for _, input := range s.ScriptInputs {
+		add(input.UTxO, input.UTxO.ScriptRef)
+	}
+	for _, input := range s.WalletInputs {
+		add(input, input.ScriptRef)
+	}
+	if s.ReferenceScript != nil {
+		add(s.ReferenceScript.UTxO, s.ReferenceScript.Script)
+	}
+	var total uint64
+	for _, size := range consumed {
+		total += size
+	}
+	return total
+}
+
 func scaleUp(n int64) int64 {
 	if n > math.MaxInt64/declaredUnitsNum {
 		return math.MaxInt64
@@ -129,8 +158,9 @@ func scaleUp(n int64) int64 {
 }
 
 // minFeeFor is the Conway minimum fee for a transaction of txSize bytes that
-// declares ex execution units and spends no reference scripts.
-func minFeeFor(txSize int, ex common.ExUnits, p ScriptParams) uint64 {
+// declares ex execution units and whose inputs and reference inputs carry
+// refScriptSize bytes of reference scripts in total.
+func minFeeFor(txSize int, ex common.ExUnits, p ScriptParams, refScriptSize uint64) uint64 {
 	fee := new(big.Rat).SetInt64(int64(p.MinFeeA)*int64(txSize) + int64(p.MinFeeB)) //nolint:gosec // protocol-sized values
 	if p.MemPrice != nil {
 		fee.Add(fee, new(big.Rat).Mul(p.MemPrice, new(big.Rat).SetInt64(ex.Memory)))
@@ -142,5 +172,21 @@ func minFeeFor(txSize int, ex common.ExUnits, p ScriptParams) uint64 {
 	if r.Sign() > 0 {
 		q.Add(q, big.NewInt(1))
 	}
-	return q.Uint64()
+	return q.Uint64() + refScriptFee(refScriptSize, p)
+}
+
+// refScriptFee is the ledger's tiered reference-script fee, floored once
+// over all tiers. It cannot fail for the parameters Verify accepts, so an
+// unusable price makes the minimum unreachable instead of free.
+func refScriptFee(size uint64, p ScriptParams) uint64 {
+	fee, err := conway.CalculateRefScriptFee(
+		size,
+		&cbor.Rat{Rat: p.refScriptCost()},
+		conway.RefScriptCostStride,
+		&cbor.Rat{Rat: big.NewRat(6, 5)},
+	)
+	if err != nil {
+		return math.MaxUint64 / 2
+	}
+	return fee
 }
