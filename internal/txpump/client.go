@@ -187,12 +187,14 @@ func (c *NodeClient) submitTx(eraID uint16, txBytes []byte) error {
 // With checkPending false the mempool is not consulted: a pending transaction
 // with an output in the snapshot is reported absent (confirmed) and any other
 // is reported present, keeping its inputs reserved. Use it for a
-// cardano-node: gouroboros' LocalTxMonitor HasTx sends a bare transaction ID
-// where cardano-node expects an era-tagged one, so cardano-node closes the
-// connection.
+// cardano-node, whose mempool cannot be queried through this client.
+//
+// eraID tags each pending transaction ID in the monitor query, which nodes
+// refuse to decode without it.
 func (c *NodeClient) ReconcileWallet(
 	addresses [][]byte,
 	txIDs []string,
+	eraID uint8,
 	checkPending bool,
 ) (snapshot []UTxO, presence map[string]bool, retErr error) {
 	if c == nil || c.conn == nil {
@@ -252,7 +254,7 @@ func (c *NodeClient) ReconcileWallet(
 					err,
 				)
 			}
-			present, err := monitor.Client.HasTx(rawID)
+			present, err := monitor.Client.HasTxForEra(eraID, rawID)
 			if err != nil {
 				return nil, nil, fmt.Errorf(
 					"node %s: check pending tx %s: %w",

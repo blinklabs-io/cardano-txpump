@@ -236,6 +236,7 @@ func (p *Pump) Run(ctx context.Context) error {
 			snapshot, presence, reconcileErr := client.ReconcileWallet(
 				addresses,
 				ids,
+				p.pendingTxEraID(),
 				!onFallback,
 			)
 			if reconcileErr != nil {
@@ -703,6 +704,15 @@ func (p *Pump) runApp(
 
 // submitAppTx submits an app-built transaction and appends it to the
 // transaction log. It returns the submission error, if any.
+// pendingTxEraID is the era used to tag pending transaction IDs in mempool
+// queries. It follows the configured era, the one payments are built in.
+func (p *Pump) pendingTxEraID() uint8 {
+	if p.cfg.TransactionEra == "dijkstra" {
+		return uint8(dijkstraEraID)
+	}
+	return uint8(conwayEraID)
+}
+
 func (p *Pump) submitAppTx(
 	client *NodeClient,
 	batchSize int,
