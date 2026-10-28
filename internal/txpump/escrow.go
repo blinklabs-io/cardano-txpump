@@ -44,8 +44,6 @@ const (
 	// reached the chain, rejected with an unrecognised message, is not
 	// retried forever.
 	escrowMaxRejections = 3
-	// escrowFromEpoch matches the plutus workload's gate.
-	escrowFromEpoch = 3
 )
 
 type escrowState int
@@ -137,11 +135,7 @@ func (a *escrowApp) Step(env *AppEnv) (bool, error) {
 	if len(env.Cfg.PlutusV3CostModel) == 0 {
 		return false, nil
 	}
-	epochLength := env.Cfg.EpochLength
-	if epochLength == 0 {
-		epochLength = 500
-	}
-	if env.Slot/epochLength < escrowFromEpoch {
+	if !scriptAppsStarted(env.Cfg, env.Slot) {
 		return false, nil
 	}
 	params := scriptParamsFor(env.Cfg)

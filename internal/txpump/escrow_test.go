@@ -75,7 +75,7 @@ func newEscrowHarness(t *testing.T) *escrowHarness {
 	}
 	h.users = usersFromWallet(h.wallet)
 	cm := testCostModel(t)
-	h.cfg = &Config{PlutusV3CostModel: cm, ScriptParams: DefaultScriptParams(cm), EpochLength: 500}
+	h.cfg = &Config{PlutusV3CostModel: cm, ScriptParams: DefaultScriptParams(cm), EpochLength: 500, ScriptAppsFromEpoch: 3}
 	app.choose = func(lo, hi int) int {
 		if len(h.picks) == 0 {
 			return lo
@@ -330,6 +330,10 @@ func TestEscrowGatedByCostModelAndEpoch(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok, "epoch 2 is too early")
 
+	h.cfg.ScriptAppsFromEpoch = 2
+	require.True(t, scriptAppsStarted(h.cfg, env.Slot), "a lower start epoch opens the gate")
+
+	h.cfg.ScriptAppsFromEpoch = 3
 	h.cfg.PlutusV3CostModel = nil
 	ok, err = h.app.Step(h.env(h.users[0]))
 	require.NoError(t, err)

@@ -200,6 +200,7 @@ func clearTxpumpEnv(t *testing.T) {
 		"TXPUMP_COOLDOWN_MAX",
 		"TXPUMP_CONFIRMATION_SLOTS",
 		"TXPUMP_STARTUP_TIMEOUT",
+		"TXPUMP_SCRIPT_APPS_FROM_EPOCH",
 		"TXPUMP_TYPES",
 		"TXPUMP_USERS",
 		"TXPUMP_TRANSACTION_ERA",
@@ -232,4 +233,31 @@ func TestValidateAcceptsRegisteredAppsAndRejectsUnknown(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "fake_once")
 	require.Contains(t, err.Error(), "payment")
+}
+
+func TestLoadConfig_ScriptAppsFromEpoch(t *testing.T) {
+	clearTxpumpEnv(t)
+
+	cfg, err := LoadConfig()
+	require.NoError(t, err)
+	require.Equal(t, uint64(3), cfg.ScriptAppsFromEpoch)
+
+	t.Setenv("TXPUMP_SCRIPT_APPS_FROM_EPOCH", "1")
+	cfg, err = LoadConfig()
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), cfg.ScriptAppsFromEpoch)
+
+	t.Setenv("TXPUMP_SCRIPT_APPS_FROM_EPOCH", "-1")
+	_, err = LoadConfig()
+	require.ErrorContains(t, err, "TXPUMP_SCRIPT_APPS_FROM_EPOCH")
+}
+
+func TestScriptAppsStarted(t *testing.T) {
+	cfg := &Config{EpochLength: 900, ScriptAppsFromEpoch: 1}
+	require.False(t, scriptAppsStarted(cfg, 899))
+	require.True(t, scriptAppsStarted(cfg, 900))
+
+	cfg.EpochLength = 0
+	require.False(t, scriptAppsStarted(cfg, 499), "an unset length falls back to 500")
+	require.True(t, scriptAppsStarted(cfg, 500))
 }

@@ -38,7 +38,7 @@ The workload types exercise different ledger paths:
 - `escrow` has two users trade ADA through the cardano-templates escrow
   validator: one initiates, another deposits, then both complete the trade or
   either cancels. It needs at least two keys and the Plutus V3 cost model, and
-  runs from epoch 3. Reference-script mode reserves an additional publisher
+  runs from `TXPUMP_SCRIPT_APPS_FROM_EPOCH` (default 3). Reference-script mode reserves an additional publisher
   key, so escrow requires three keys in that mode. Every script transaction is
   planned from measured execution units and checked offline against the Conway
   ledger rules and the Plutus evaluator; a transaction that fails that check is
@@ -48,7 +48,7 @@ The workload types exercise different ledger paths:
   validity range that starts strictly after it, and the owner may claw the
   value back at any time. It needs at least two keys, the Plutus V3 cost model
   and the genesis system start (`systemStartUnix` or Shelley genesis), because
-  the lock time is POSIX milliseconds. It runs from epoch 3 and its
+  the lock time is POSIX milliseconds. It runs from `TXPUMP_SCRIPT_APPS_FROM_EPOCH` (default 3) and its
   transactions are verified offline like escrow's.
 
 Each genesis signing key is one user. Registered apps such as `peer_payment`
@@ -159,6 +159,7 @@ cannot find spendable UTxOs matched to signing keys.
 | `TXPUMP_GENESIS_FILE` | unset | Testnet spec or Shelley genesis JSON for epoch, slot, and system-start parameters. YAML specs need a resolved `systemStartUnix`. |
 | `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types: the four core types plus registered apps (`peer_payment`, `escrow`, `vesting`). |
 | `TXPUMP_USERS` | unset (all keys) | Signing keys this instance uses, as positions or ranges such as `0,2-3`. |
+| `TXPUMP_SCRIPT_APPS_FROM_EPOCH` | `3` | First epoch in which script apps such as `escrow` and `vesting` run. Lower it for short runs on networks with long epochs. |
 | `TXPUMP_TRANSACTION_ERA` | `conway` | `conway` supports all workload types; `dijkstra` supports payments only. |
 | `TXPUMP_TX_COUNT_MIN` / `TXPUMP_TX_COUNT_MAX` | `1` / `10` | Minimum and maximum transactions per batch. |
 | `TXPUMP_COOLDOWN_MIN` / `TXPUMP_COOLDOWN_MAX` | `500` / `2000` | Minimum and maximum delay between batches, in milliseconds. |

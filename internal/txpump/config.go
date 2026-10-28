@@ -111,6 +111,10 @@ type Config struct {
 	// EpochLength is the number of slots per epoch. Default: 500.
 	EpochLength uint64
 
+	// ScriptAppsFromEpoch is the first epoch in which script apps such as
+	// escrow and vesting run. Default: 3.
+	ScriptAppsFromEpoch uint64
+
 	// SystemStartUnix is the genesis system start time in Unix seconds.
 	SystemStartUnix int64
 
@@ -174,8 +178,9 @@ func LoadConfig() (*Config, error) {
 		DelegationPoolKeyHash: envString(
 			"TXPUMP_DELEGATION_POOL_KEY_HASH", "",
 		),
-		EpochLength:      500,
-		ReferenceScripts: envString("TXPUMP_REFERENCE_SCRIPTS", ReferenceScriptsOff),
+		EpochLength:         500,
+		ScriptAppsFromEpoch: 3,
+		ReferenceScripts:    envString("TXPUMP_REFERENCE_SCRIPTS", ReferenceScriptsOff),
 	}
 
 	if v := os.Getenv("TXPUMP_NETWORK_MAGIC"); v != "" {
@@ -247,6 +252,17 @@ func LoadConfig() (*Config, error) {
 			return nil, err
 		}
 		cfg.StartupTimeout = timeout
+	}
+
+	if v := os.Getenv("TXPUMP_SCRIPT_APPS_FROM_EPOCH"); v != "" {
+		epoch, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"TXPUMP_SCRIPT_APPS_FROM_EPOCH: must be a non-negative integer, got %q",
+				v,
+			)
+		}
+		cfg.ScriptAppsFromEpoch = epoch
 	}
 
 	if v := os.Getenv("TXPUMP_TYPES"); v != "" {
