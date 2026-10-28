@@ -41,6 +41,14 @@ func TestLoadValidatorVesting(t *testing.T) {
 	require.Equal(t, common.PlutusV3Script(v.Code).Hash().Bytes(), v.Hash)
 }
 
+func TestLoadValidatorSimpleTransfer(t *testing.T) {
+	v, err := LoadValidator("simple-transfer.json", "simple_transfer.simpleTransfer.spend")
+	require.NoError(t, err)
+	// The blueprint holds the program before its receiver parameter is
+	// applied, so this is the template's hash and not any address's.
+	require.Equal(t, "fdefae317c4a7764a6f39a83e9c35638147e4e7b6c2fbce32f3ec161", hex.EncodeToString(v.Hash))
+}
+
 func TestLoadValidatorRejectsUnknownTitleAndFile(t *testing.T) {
 	_, err := LoadValidator("escrow.json", "nope")
 	require.Error(t, err)
