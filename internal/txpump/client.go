@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -194,7 +195,7 @@ func (c *NodeClient) submitTx(eraID uint16, txBytes []byte) error {
 func (c *NodeClient) ReconcileWallet(
 	addresses [][]byte,
 	txIDs []string,
-	eraID uint8,
+	eraID uint16,
 	checkPending bool,
 ) (snapshot []UTxO, presence map[string]bool, retErr error) {
 	if c == nil || c.conn == nil {
@@ -223,6 +224,13 @@ func (c *NodeClient) ReconcileWallet(
 	}
 	presence = make(map[string]bool, len(txIDs))
 	if checkPending {
+		if eraID > math.MaxUint8 {
+			return nil, nil, fmt.Errorf(
+				"node %s: era %d does not fit a transaction ID tag",
+				c.addr,
+				eraID,
+			)
+		}
 		monitor := c.conn.LocalTxMonitor()
 		if monitor == nil || monitor.Client == nil {
 			return nil, nil, fmt.Errorf(
@@ -254,7 +262,7 @@ func (c *NodeClient) ReconcileWallet(
 					err,
 				)
 			}
-			present, err := monitor.Client.HasTxForEra(eraID, rawID)
+			present, err := monitor.Client.HasTxForEra(uint8(eraID), rawID)
 			if err != nil {
 				return nil, nil, fmt.Errorf(
 					"node %s: check pending tx %s: %w",

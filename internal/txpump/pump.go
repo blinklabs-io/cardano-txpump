@@ -236,7 +236,7 @@ func (p *Pump) Run(ctx context.Context) error {
 			snapshot, presence, reconcileErr := client.ReconcileWallet(
 				addresses,
 				ids,
-				p.pendingTxEraID(),
+				p.transactionEraID(),
 				!onFallback,
 			)
 			if reconcileErr != nil {
@@ -702,27 +702,24 @@ func (p *Pump) runApp(
 	return submitted
 }
 
-// submitAppTx submits an app-built transaction and appends it to the
-// transaction log. It returns the submission error, if any.
-// pendingTxEraID is the era used to tag pending transaction IDs in mempool
-// queries. It follows the configured era, the one payments are built in.
-func (p *Pump) pendingTxEraID() uint8 {
+// transactionEraID is the era transactions are built and submitted in, and the
+// era that tags their IDs in mempool queries.
+func (p *Pump) transactionEraID() uint16 {
 	if p.cfg.TransactionEra == "dijkstra" {
-		return uint8(dijkstraEraID)
+		return dijkstraEraID
 	}
-	return uint8(conwayEraID)
+	return conwayEraID
 }
 
+// submitAppTx submits an app-built transaction and appends it to the
+// transaction log. It returns the submission error, if any.
 func (p *Pump) submitAppTx(
 	client *NodeClient,
 	batchSize int,
 	txType, txID string,
 	txBytes []byte,
 ) error {
-	eraID := conwayEraID
-	if p.cfg.TransactionEra == "dijkstra" {
-		eraID = dijkstraEraID
-	}
+	eraID := p.transactionEraID()
 	submitErr := client.SubmitTx(eraID, txBytes)
 	entry := TxLog{
 		TxID:      txID,
@@ -830,10 +827,9 @@ func (p *Pump) submitPayment(client *NodeClient, batchSize int) bool {
 	}
 
 	buildPayment := BuildPayment
-	eraID := conwayEraID
+	eraID := p.transactionEraID()
 	if p.cfg.TransactionEra == "dijkstra" {
 		buildPayment = BuildDijkstraPayment
-		eraID = dijkstraEraID
 	}
 	txBytes, txID, err := buildPayment(params)
 	if err != nil {

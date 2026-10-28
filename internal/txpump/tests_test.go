@@ -326,7 +326,7 @@ func TestReconcileWalletObservesMonitorBeforeLSQ(t *testing.T) {
 		ouroboros.WithLocalStateQueryConfig(lsqConfig),
 		ouroboros.WithLocalTxMonitorConfig(monitorConfig),
 	)
-	snapshot, presence, err := client.ReconcileWallet([][]byte{addressBytes}, nil, uint8(conwayEraID), true)
+	snapshot, presence, err := client.ReconcileWallet([][]byte{addressBytes}, nil, conwayEraID, true)
 	require.NoError(t, err)
 	require.Empty(t, presence)
 	require.Len(t, snapshot, 1)
@@ -380,24 +380,28 @@ func TestReconcileWalletChecksPendingTxPresence(t *testing.T) {
 			return nil
 		}),
 	)
+	txBytes, txID, err := BuildPayment(validParams())
+	require.NoError(t, err)
 	monitorConfig := localtxmonitor.NewConfig(
 		localtxmonitor.WithGetMempoolFunc(func(localtxmonitor.CallbackContext) (uint64, uint32, []localtxmonitor.TxAndEraId, error) {
-			return 0, 100, nil, nil
+			return 0, 100, []localtxmonitor.TxAndEraId{
+				{EraId: uint(conwayEraID), Tx: txBytes},
+			}, nil
 		}),
 	)
 	client := newProtocolTestClient(t,
 		ouroboros.WithLocalStateQueryConfig(lsqConfig),
 		ouroboros.WithLocalTxMonitorConfig(monitorConfig),
 	)
-	txID := ledger.NewBlake2b256([]byte{0x33}).String()
+	absent := ledger.NewBlake2b256([]byte{0x33}).String()
 	_, presence, err := client.ReconcileWallet(
 		[][]byte{addressBytes},
-		[]string{txID},
-		uint8(conwayEraID),
+		[]string{txID, absent},
+		conwayEraID,
 		true,
 	)
 	require.NoError(t, err)
-	require.Equal(t, map[string]bool{txID: false}, presence)
+	require.Equal(t, map[string]bool{txID: true, absent: false}, presence)
 }
 
 func newProtocolTestClient(t *testing.T, serverOptions ...ouroboros.ConnectionOptionFunc) *NodeClient {
@@ -661,7 +665,7 @@ func TestReconcileWalletWithoutPendingCheckKeepsReservations(t *testing.T) {
 	pending := fmt.Sprintf("%064x", 7)
 	confirmed := ledger.NewBlake2b256([]byte{0x33}).String()
 	snapshot, presence, err := client.ReconcileWallet(
-		[][]byte{addressBytes}, []string{pending, confirmed}, uint8(conwayEraID), false,
+		[][]byte{addressBytes}, []string{pending, confirmed}, conwayEraID, false,
 	)
 	require.NoError(t, err)
 	require.Len(t, snapshot, 1)
