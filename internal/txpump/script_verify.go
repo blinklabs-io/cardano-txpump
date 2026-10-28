@@ -15,11 +15,13 @@
 package txpump
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/big"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -86,6 +88,7 @@ type KnownUTxO struct {
 	Ref      string // "<txhash>#<index>"
 	Address  []byte
 	Lovelace uint64
+	Assets   []NativeAsset
 	Datum    []byte // inline datum CBOR, nil if none
 	// ScriptV3 is the Plutus V3 script (in witness-set form) the output
 	// carries as a reference script, nil if none.
@@ -120,6 +123,7 @@ func KnownUTxOsFromTx(txBytes []byte) ([]KnownUTxO, error) {
 			Ref:      id + "#" + strconv.Itoa(i),
 			Address:  addr,
 			Lovelace: o.Amount().Uint64(),
+			Assets:   nativeAssetsOf(o.Assets()),
 		}
 		if d := o.Datum(); d != nil {
 			k.Datum = append([]byte(nil), d.Cbor()...)
@@ -133,6 +137,30 @@ func KnownUTxOsFromTx(txBytes []byte) ([]KnownUTxO, error) {
 		known = append(known, k)
 	}
 	return known, nil
+}
+
+// nativeAssetsOf lists the assets of a decoded output value in a stable order.
+func nativeAssetsOf(ma *common.MultiAsset[common.MultiAssetTypeOutput]) []NativeAsset {
+	if ma == nil {
+		return nil
+	}
+	var assets []NativeAsset
+	for _, policy := range ma.Policies() {
+		for _, name := range ma.Assets(policy) {
+			assets = append(assets, NativeAsset{
+				Policy:   policy.Bytes(),
+				Name:     name,
+				Quantity: ma.Asset(policy, name).Uint64(),
+			})
+		}
+	}
+	sort.Slice(assets, func(i, j int) bool {
+		if c := bytes.Compare(assets[i].Policy, assets[j].Policy); c != 0 {
+			return c < 0
+		}
+		return bytes.Compare(assets[i].Name, assets[j].Name) < 0
+	})
+	return assets
 }
 
 // stubLedger implements the ledger state the Conway UTxO rules and the Plutus
@@ -200,7 +228,7 @@ func stubFor(known []KnownUTxO, p ScriptParams) (*stubLedger, error) {
 		if err != nil {
 			return nil, fmt.Errorf("known utxo %q: %w", k.Ref, err)
 		}
-		out := plutusOutput{Address: k.Address, Amount: k.Lovelace}
+		out := plutusOutput{Address: k.Address, Amount: k.Lovelace, Assets: k.Assets}
 		if k.Datum != nil {
 			out.DatumOption = []any{uint64(1), cbor.Tag{Number: 24, Content: k.Datum}}
 		}

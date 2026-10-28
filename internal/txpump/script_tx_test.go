@@ -127,3 +127,57 @@ func TestBuildScriptTxRejectsBadSpecs(t *testing.T) {
 		require.Error(t, err, name)
 	}
 }
+
+func mintTestSpec(t *testing.T) ScriptTxSpec {
+	t.Helper()
+	spec := scriptTestSpec(t, true)
+	spec.ScriptInputs = nil
+	spec.Mint = []NativeAsset{{Policy: spec.Validator.Hash, Name: []byte("lot"), Quantity: 1}}
+	spec.MintRedeemer = escrowCancelRedeemer()
+	spec.Outputs = []ScriptOutput{{
+		Address: append([]byte{0x60}, keyHash(spec.SigningKeys[0])...), Lovelace: 24_000_000,
+		Assets: spec.Mint,
+	}}
+	return spec
+}
+
+func TestBuildScriptTxMintsUnderTheValidatorPolicy(t *testing.T) {
+	spec := mintTestSpec(t)
+	txBytes, _, err := BuildScriptTx(spec)
+	require.NoError(t, err)
+	tx, err := conway.NewConwayTransactionFromCbor(txBytes)
+	require.NoError(t, err)
+
+	mint := tx.AssetMint()
+	require.NotNil(t, mint)
+	var policy common.Blake2b224
+	copy(policy[:], spec.Validator.Hash)
+	require.Equal(t, int64(1), mint.Asset(policy, []byte("lot")).Int64())
+
+	var tags []common.RedeemerTag
+	var idx []uint32
+	for k := range tx.WitnessSet.Redeemers().Iter() {
+		tags, idx = append(tags, k.Tag), append(idx, k.Index)
+	}
+	require.Equal(t, []common.RedeemerTag{common.RedeemerTagMint}, tags)
+	require.Equal(t, []uint32{0}, idx)
+	require.Len(t, tx.WitnessSet.PlutusV3Scripts(), 1)
+}
+
+func TestBuildScriptTxRejectsBadMintSpecs(t *testing.T) {
+	cases := map[string]func(*ScriptTxSpec){
+		"no redeemer": func(s *ScriptTxSpec) { s.MintRedeemer = nil },
+		"foreign policy": func(s *ScriptTxSpec) {
+			s.Mint = []NativeAsset{{Policy: make([]byte, 28), Name: []byte("x"), Quantity: 1}}
+		},
+		"zero quantity":         func(s *ScriptTxSpec) { s.Mint[0].Quantity = 0 },
+		"mint with a spend too": func(s *ScriptTxSpec) { s.ScriptInputs = scriptTestSpec(t, true).ScriptInputs },
+	}
+	for name, mutate := range cases {
+		spec := mintTestSpec(t)
+		spec.Mint = append([]NativeAsset(nil), spec.Mint...)
+		mutate(&spec)
+		_, _, err := BuildScriptTx(spec)
+		require.Error(t, err, name)
+	}
+}

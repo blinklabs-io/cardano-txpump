@@ -41,6 +41,17 @@ func TestLoadValidatorVesting(t *testing.T) {
 	require.Equal(t, common.PlutusV3Script(v.Code).Hash().Bytes(), v.Hash)
 }
 
+func TestLoadValidatorAuction(t *testing.T) {
+	spend, err := LoadValidator("auction.json", "auction.auction.spend")
+	require.NoError(t, err)
+	require.Equal(t, "0136e9acacc40eee2deb228a1a3bb5e15381b5d93c2d8845b65d8385", hex.EncodeToString(spend.Hash))
+	// The mint handler is the same program, so the auction address and the
+	// policy of its NFT share one hash.
+	mint, err := LoadValidator("auction.json", "auction.auction.mint")
+	require.NoError(t, err)
+	require.Equal(t, spend.Hash, mint.Hash)
+}
+
 func TestLoadValidatorRejectsUnknownTitleAndFile(t *testing.T) {
 	_, err := LoadValidator("escrow.json", "nope")
 	require.Error(t, err)
