@@ -38,6 +38,7 @@ type ScriptInput struct {
 type ScriptOutput struct {
 	Address  []byte
 	Lovelace uint64
+	Assets   []NativeAsset
 	Datum    data.PlutusData
 }
 
@@ -229,7 +230,7 @@ func BuildScriptTx(spec ScriptTxSpec) ([]byte, string, error) {
 
 	outputs := make([]plutusOutput, 0, len(spec.Outputs))
 	for _, o := range spec.Outputs {
-		out := plutusOutput{Address: o.Address, Amount: o.Lovelace}
+		out := plutusOutput{Address: o.Address, Amount: o.Lovelace, Assets: o.Assets}
 		if o.Datum != nil {
 			datum, err := encodePlutusData(o.Datum)
 			if err != nil {
