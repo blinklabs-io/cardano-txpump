@@ -326,7 +326,7 @@ func TestReconcileWalletObservesMonitorBeforeLSQ(t *testing.T) {
 		ouroboros.WithLocalStateQueryConfig(lsqConfig),
 		ouroboros.WithLocalTxMonitorConfig(monitorConfig),
 	)
-	snapshot, presence, err := client.ReconcileWallet([][]byte{addressBytes}, nil, true)
+	snapshot, presence, err := client.ReconcileWallet([][]byte{addressBytes}, nil, conwayEraID, true)
 	require.NoError(t, err)
 	require.Empty(t, presence)
 	require.Len(t, snapshot, 1)
@@ -344,6 +344,64 @@ func TestReconcileWalletObservesMonitorBeforeLSQ(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, selected, 1)
 	require.Equal(t, snapshot[0].TxHash, selected[0].TxHash)
+}
+
+// TestReconcileWalletChecksPendingTxPresence sends a real HasTx for a pending
+// transaction ID. Nodes require the ID tagged with its era, so a bare ID makes
+// the node close the connection and reconciliation never completes.
+func TestReconcileWalletChecksPendingTxPresence(t *testing.T) {
+	queryCount := 0
+	address, err := ledger.NewAddress(
+		"addr_test1vrk294czhxhglflvxla7vxj2cjz7wyrdpxl3fj0vych5wws77xuc7",
+	)
+	require.NoError(t, err)
+	addressBytes, err := address.Bytes()
+	require.NoError(t, err)
+
+	lsqConfig := localstatequery.NewConfig(
+		localstatequery.WithAcquireFunc(func(
+			localstatequery.CallbackContext,
+			localstatequery.AcquireTarget,
+			bool,
+		) error {
+			return nil
+		}),
+		localstatequery.WithQueryFunc(func(
+			localstatequery.CallbackContext,
+			localstatequery.QueryWrapper,
+		) (any, error) {
+			queryCount++
+			if queryCount == 1 {
+				return 6, nil // Conway current era
+			}
+			return localstatequery.UTxOsResult{}, nil
+		}),
+		localstatequery.WithReleaseFunc(func(localstatequery.CallbackContext) error {
+			return nil
+		}),
+	)
+	txBytes, txID, err := BuildPayment(validParams())
+	require.NoError(t, err)
+	monitorConfig := localtxmonitor.NewConfig(
+		localtxmonitor.WithGetMempoolFunc(func(localtxmonitor.CallbackContext) (uint64, uint32, []localtxmonitor.TxAndEraId, error) {
+			return 0, 100, []localtxmonitor.TxAndEraId{
+				{EraId: uint(conwayEraID), Tx: txBytes},
+			}, nil
+		}),
+	)
+	client := newProtocolTestClient(t,
+		ouroboros.WithLocalStateQueryConfig(lsqConfig),
+		ouroboros.WithLocalTxMonitorConfig(monitorConfig),
+	)
+	absent := ledger.NewBlake2b256([]byte{0x33}).String()
+	_, presence, err := client.ReconcileWallet(
+		[][]byte{addressBytes},
+		[]string{txID, absent},
+		conwayEraID,
+		true,
+	)
+	require.NoError(t, err)
+	require.Equal(t, map[string]bool{txID: true, absent: false}, presence)
 }
 
 func newProtocolTestClient(t *testing.T, serverOptions ...ouroboros.ConnectionOptionFunc) *NodeClient {
@@ -607,7 +665,7 @@ func TestReconcileWalletWithoutPendingCheckKeepsReservations(t *testing.T) {
 	pending := fmt.Sprintf("%064x", 7)
 	confirmed := ledger.NewBlake2b256([]byte{0x33}).String()
 	snapshot, presence, err := client.ReconcileWallet(
-		[][]byte{addressBytes}, []string{pending, confirmed}, false,
+		[][]byte{addressBytes}, []string{pending, confirmed}, conwayEraID, false,
 	)
 	require.NoError(t, err)
 	require.Len(t, snapshot, 1)
