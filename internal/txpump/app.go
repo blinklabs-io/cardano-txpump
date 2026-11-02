@@ -141,3 +141,13 @@ func registeredAppNames() []string {
 	sort.Strings(names)
 	return names
 }
+
+// scriptAppsStarted reports whether slot lies in or after the first epoch in
+// which script apps run. An unset epoch length falls back to the default.
+func scriptAppsStarted(cfg *Config, slot uint64) bool {
+	epochLength := cfg.EpochLength
+	if epochLength == 0 {
+		epochLength = 500
+	}
+	return slot/epochLength >= cfg.ScriptAppsFromEpoch
+}

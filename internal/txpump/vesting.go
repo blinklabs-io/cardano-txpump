@@ -44,8 +44,6 @@ const (
 	// reached the chain, rejected with an unrecognised message, is not
 	// retried forever.
 	vestingMaxRejections = 3
-	// vestingFromEpoch matches the plutus workload's gate.
-	vestingFromEpoch = 3
 )
 
 type vestingAction int
@@ -139,11 +137,7 @@ func (a *vestingApp) Step(env *AppEnv) (bool, error) {
 	if len(env.Cfg.PlutusV3CostModel) == 0 {
 		return false, nil
 	}
-	epochLength := env.Cfg.EpochLength
-	if epochLength == 0 {
-		epochLength = 500
-	}
-	if env.Slot/epochLength < vestingFromEpoch {
+	if !scriptAppsStarted(env.Cfg, env.Slot) {
 		return false, nil
 	}
 	params := scriptParamsFor(env.Cfg)
