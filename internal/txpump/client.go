@@ -306,6 +306,9 @@ func (c *NodeClient) ReconcileWallet(
 	}
 	snapshot = make([]UTxO, 0, len(result.Results))
 	for id, output := range result.Results {
+		if holdsNativeAssets(output) {
+			continue
+		}
 		raw, err := output.Address().Bytes()
 		if err != nil {
 			return nil, nil, fmt.Errorf(

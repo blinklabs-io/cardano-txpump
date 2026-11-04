@@ -38,7 +38,7 @@ The workload types exercise different ledger paths:
 - `escrow` has two users trade ADA through the cardano-templates escrow
   validator: one initiates, another deposits, then both complete the trade or
   either cancels. It needs at least two keys and the Plutus V3 cost model, and
-  runs from epoch 3. Reference-script mode reserves an additional publisher
+  runs from `TXPUMP_SCRIPT_APPS_FROM_EPOCH` (default 3). Reference-script mode reserves an additional publisher
   key, so escrow requires three keys in that mode. Every script transaction is
   planned from measured execution units and checked offline against the Conway
   ledger rules and the Plutus evaluator; a transaction that fails that check is
@@ -48,7 +48,7 @@ The workload types exercise different ledger paths:
   validity range that starts strictly after it, and the owner may claw the
   value back at any time. It needs at least two keys, the Plutus V3 cost model
   and the genesis system start (`systemStartUnix` or Shelley genesis), because
-  the lock time is POSIX milliseconds. It runs from epoch 3 and its
+  the lock time is POSIX milliseconds. It runs from `TXPUMP_SCRIPT_APPS_FROM_EPOCH` (default 3) and its
   transactions are verified offline like escrow's.
 - `simple-transfer` has one user lock ADA for another through the
   cardano-templates simple-transfer validator, which only a transaction signed
@@ -57,8 +57,20 @@ The workload types exercise different ledger paths:
   each receiver it meets, which gives that receiver its own script hash and
   address; the receiver then claims the whole position. No extra service is
   needed: receivers are the other simulated users. It needs at least two keys
-  and the Plutus V3 cost model, runs from epoch 3, and its transactions are
+  and the Plutus V3 cost model, runs from `TXPUMP_SCRIPT_APPS_FROM_EPOCH`, and its transactions are
   verified offline like escrow's.
+- `auction` runs English auctions through the cardano-templates auction
+  validator. A seller mints an item under the validator's own policy into the
+  auction UTxO with an opening bid and an expiration; other users outbid each
+  other, each bid refunding the previous bidder, until the expiration; the
+  auction then settles, paying the seller and sending the item to the winner,
+  or returning it to the seller when nobody bid. Bids use a validity range that
+  ends by the expiration and settlement one that starts strictly after it. It
+  needs at least two keys with enterprise addresses, the Plutus V3 cost model
+  and the genesis system start, runs from `TXPUMP_SCRIPT_APPS_FROM_EPOCH`, and its transactions are
+  verified offline like escrow's. The item is never burned, so each settled
+  auction leaves a small output holding it at the winner's or seller's address;
+  such outputs are kept out of the wallet.
 
 Each genesis signing key is one user. Registered apps such as `peer_payment`
 run as a randomly chosen user each time; `payment` and the other core types
@@ -166,8 +178,9 @@ cannot find spendable UTxOs matched to signing keys.
 | `TXPUMP_NETWORK_MAGIC` | `42` | Network magic; read from `TXPUMP_GENESIS_FILE` when unset. |
 | `TXPUMP_GENESIS_UTXO_FILE` | unset | Initial UTxOs and the directory containing their signing keys. Required for a funded run. |
 | `TXPUMP_GENESIS_FILE` | unset | Testnet spec or Shelley genesis JSON for epoch, slot, and system-start parameters. YAML specs need a resolved `systemStartUnix`. |
-| `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types: the four core types plus registered apps (`peer_payment`, `escrow`, `vesting`, `simple-transfer`). |
+| `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types: the four core types plus registered apps (`peer_payment`, `escrow`, `vesting`, `simple-transfer`, `auction`). |
 | `TXPUMP_USERS` | unset (all keys) | Signing keys this instance uses, as positions or ranges such as `0,2-3`. |
+| `TXPUMP_SCRIPT_APPS_FROM_EPOCH` | `3` | First epoch in which script apps such as `escrow` and `vesting` run. Lower it for short runs on networks with long epochs. |
 | `TXPUMP_TRANSACTION_ERA` | `conway` | `conway` supports all workload types; `dijkstra` supports payments only. |
 | `TXPUMP_TX_COUNT_MIN` / `TXPUMP_TX_COUNT_MAX` | `1` / `10` | Minimum and maximum transactions per batch. |
 | `TXPUMP_COOLDOWN_MIN` / `TXPUMP_COOLDOWN_MAX` | `500` / `2000` | Minimum and maximum delay between batches, in milliseconds. |

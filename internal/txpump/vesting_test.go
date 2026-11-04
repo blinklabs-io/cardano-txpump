@@ -69,7 +69,7 @@ func newVestingHarness(t *testing.T) *vestingHarness {
 	params := DefaultScriptParams(cm)
 	params.SystemStart = time.Unix(1_700_000_000, 0)
 	h.cfg = &Config{
-		PlutusV3CostModel: cm, ScriptParams: params, EpochLength: 500,
+		PlutusV3CostModel: cm, ScriptParams: params, EpochLength: 500, ScriptAppsFromEpoch: 3,
 		SlotLength: time.Second, SystemStartUnix: 1_700_000_000,
 	}
 	app.choose = func(lo, hi int) int {

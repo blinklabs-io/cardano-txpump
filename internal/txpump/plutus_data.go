@@ -108,3 +108,30 @@ func vestingDatum(lockUntil int64, owner, beneficiary []byte) data.PlutusData {
 
 // vestingRedeemer is Void: the validator ignores its redeemer.
 func vestingRedeemer() data.PlutusData { return data.NewConstr(0) }
+
+// auctionDatum is the template's AuctionDatum record. A nil highestBidder is
+// encoded as the empty byte string, the validator's "no bids yet" marker.
+// expiration is POSIX milliseconds.
+func auctionDatum(seller, highestBidder []byte, highestBid, expiration int64, assetPolicy, assetName []byte) data.PlutusData {
+	if highestBidder == nil {
+		highestBidder = []byte{}
+	}
+	return data.NewConstr(0,
+		data.NewByteString(seller),
+		data.NewByteString(highestBidder),
+		data.NewInteger(big.NewInt(highestBid)),
+		data.NewInteger(big.NewInt(expiration)),
+		data.NewByteString(assetPolicy),
+		data.NewByteString(assetName),
+	)
+}
+
+// The auction's Action type declares BID, WITHDRAW and END in that order;
+// WITHDRAW always fails and is never built.
+
+func auctionBidRedeemer() data.PlutusData { return data.NewConstr(0) }
+
+func auctionEndRedeemer() data.PlutusData { return data.NewConstr(2) }
+
+// auctionMintRedeemer is Void: the mint handler ignores its redeemer.
+func auctionMintRedeemer() data.PlutusData { return data.NewConstr(0) }
