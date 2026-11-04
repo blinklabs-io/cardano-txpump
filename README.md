@@ -50,6 +50,15 @@ The workload types exercise different ledger paths:
   and the genesis system start (`systemStartUnix` or Shelley genesis), because
   the lock time is POSIX milliseconds. It runs from `TXPUMP_SCRIPT_APPS_FROM_EPOCH` (default 3) and its
   transactions are verified offline like escrow's.
+- `simple-transfer` has one user lock ADA for another through the
+  cardano-templates simple-transfer validator, which only a transaction signed
+  by its receiver can spend. The validator takes the receiver's key hash as a
+  compile-time parameter, so the app applies it to the blueprint's program for
+  each receiver it meets, which gives that receiver its own script hash and
+  address; the receiver then claims the whole position. No extra service is
+  needed: receivers are the other simulated users. It needs at least two keys
+  and the Plutus V3 cost model, runs from `TXPUMP_SCRIPT_APPS_FROM_EPOCH`, and its transactions are
+  verified offline like escrow's.
 - `auction` runs English auctions through the cardano-templates auction
   validator. A seller mints an item under the validator's own policy into the
   auction UTxO with an opening bid and an expiration; other users outbid each
@@ -58,7 +67,7 @@ The workload types exercise different ledger paths:
   or returning it to the seller when nobody bid. Bids use a validity range that
   ends by the expiration and settlement one that starts strictly after it. It
   needs at least two keys with enterprise addresses, the Plutus V3 cost model
-  and the genesis system start, runs from epoch 3, and its transactions are
+  and the genesis system start, runs from `TXPUMP_SCRIPT_APPS_FROM_EPOCH`, and its transactions are
   verified offline like escrow's. The item is never burned, so each settled
   auction leaves a small output holding it at the winner's or seller's address;
   such outputs are kept out of the wallet.
@@ -169,7 +178,7 @@ cannot find spendable UTxOs matched to signing keys.
 | `TXPUMP_NETWORK_MAGIC` | `42` | Network magic; read from `TXPUMP_GENESIS_FILE` when unset. |
 | `TXPUMP_GENESIS_UTXO_FILE` | unset | Initial UTxOs and the directory containing their signing keys. Required for a funded run. |
 | `TXPUMP_GENESIS_FILE` | unset | Testnet spec or Shelley genesis JSON for epoch, slot, and system-start parameters. YAML specs need a resolved `systemStartUnix`. |
-| `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types: the four core types plus registered apps (`peer_payment`, `escrow`, `vesting`, `auction`). |
+| `TXPUMP_TYPES` | `payment,delegation,governance,plutus` | Comma-separated workload types: the four core types plus registered apps (`peer_payment`, `escrow`, `vesting`, `simple-transfer`, `auction`). |
 | `TXPUMP_USERS` | unset (all keys) | Signing keys this instance uses, as positions or ranges such as `0,2-3`. |
 | `TXPUMP_SCRIPT_APPS_FROM_EPOCH` | `3` | First epoch in which script apps such as `escrow` and `vesting` run. Lower it for short runs on networks with long epochs. |
 | `TXPUMP_TRANSACTION_ERA` | `conway` | `conway` supports all workload types; `dijkstra` supports payments only. |
