@@ -166,8 +166,8 @@ func TestApplyCasesGiveDistinctScripts(t *testing.T) {
 }
 
 // The token-transfer validator takes three parameters, applied one at a time
-// by aiken. Applying them in a different order, or all at once, must land on
-// the same script as aiken's sequence.
+// by aiken. Applying them all at once must land on the same script as aiken's
+// sequence; applying them in a different order must not.
 func TestApplyMultipleParametersMatchesAikenSequence(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/apply-token-transfer.json")
 	require.NoError(t, err)
