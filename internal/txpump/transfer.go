@@ -15,6 +15,7 @@
 package txpump
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -223,10 +224,13 @@ func (a *transferApp) lock(env *AppEnv, params ScriptParams) (bool, error) {
 		env.Wallet.ReturnUTxOs(inputs)
 		return false, fmt.Errorf("simple-transfer lock: %w", err)
 	}
-	if err := env.Submit("simple-transfer", txID, txBytes); err != nil {
-		env.Wallet.ReturnUTxOs(inputs)
-		env.Logger.Warn("tx rejected", "action", "lock", "tx_id", txID, "err", err)
-		return false, nil
+	submitErr := env.Submit("simple-transfer", txID, txBytes)
+	if submitErr != nil {
+		env.Logger.Log(context.Background(), submitFailureLevel(submitErr), submitFailureMessage("tx", submitErr), "action", "lock", "tx_id", txID, "err", submitErr)
+		if !ambiguousSubmission(env.Wallet, submitErr) {
+			env.Wallet.ReturnUTxOs(inputs)
+			return false, nil
+		}
 	}
 	known, err := KnownUTxOsFromTx(txBytes)
 	if err != nil {
@@ -244,6 +248,9 @@ func (a *transferApp) lock(env *AppEnv, params ScriptParams) (bool, error) {
 	env.Wallet.RecordAccepted(txID, inputs, []UTxO{{
 		TxHash: txID, Index: 1, Amount: changeOut, SigningKey: sender.Key,
 	}}, delay)
+	if submitErr != nil {
+		return false, nil
+	}
 	env.Logger.Info("simple-transfer step", "action", "lock", "tx_id", txID, "lovelace", amount)
 	return true, nil
 }
@@ -279,11 +286,14 @@ func (a *transferApp) spend(env *AppEnv, params ScriptParams, pos *transferPosit
 		a.settle(pos, false, true, false)
 		return false, fmt.Errorf("simple-transfer claim: %w", err)
 	}
-	if err := env.Submit("simple-transfer", txID, txBytes); err != nil {
-		env.Wallet.ReturnUTxOs(collateral)
-		a.settle(pos, false, true, namesMissingInput(err, pos.utxo.TxHash))
-		env.Logger.Warn("tx rejected", "action", "claim", "tx_id", txID, "err", err)
-		return false, nil
+	submitErr := env.Submit("simple-transfer", txID, txBytes)
+	if submitErr != nil {
+		env.Logger.Log(context.Background(), submitFailureLevel(submitErr), submitFailureMessage("tx", submitErr), "action", "claim", "tx_id", txID, "err", submitErr)
+		if !ambiguousSubmission(env.Wallet, submitErr) {
+			env.Wallet.ReturnUTxOs(collateral)
+			a.settle(pos, false, true, namesMissingInput(submitErr, pos.utxo.TxHash))
+			return false, nil
+		}
 	}
 	outs, err := KnownUTxOsFromTx(txBytes)
 	if err != nil {
@@ -298,6 +308,9 @@ func (a *transferApp) spend(env *AppEnv, params ScriptParams, pos *transferPosit
 		TxHash: txID, Index: 0, Amount: outs[0].Lovelace, SigningKey: actor.Key,
 	}}, env.Cfg.confirmationDelay())
 	a.settle(pos, true, false, false)
+	if submitErr != nil {
+		return false, nil
+	}
 	env.Logger.Info("simple-transfer step", "action", "claim", "tx_id", txID)
 	return true, nil
 }

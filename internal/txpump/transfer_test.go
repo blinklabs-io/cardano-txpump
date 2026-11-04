@@ -16,7 +16,6 @@ package txpump
 
 import (
 	"encoding/hex"
-	"errors"
 	"io"
 	"log/slog"
 	"math/rand"
@@ -235,7 +234,7 @@ func TestTransferAbandonsPositionOnMissingInputRejection(t *testing.T) {
 	pos := h.app.positions[0]
 	balance := h.wallet.Balance()
 
-	h.reject = func([]byte) error { return errors.New("mempool full") }
+	h.reject = func([]byte) error { return ledgerRejection("mempool full") }
 	h.picks = []int{transferClaimPick, 0}
 	ok, err := h.app.Step(h.env(receiver))
 	require.NoError(t, err)
@@ -245,7 +244,7 @@ func TestTransferAbandonsPositionOnMissingInputRejection(t *testing.T) {
 	require.Equal(t, balance, h.wallet.Balance(), "collateral is returned")
 
 	h.reject = func([]byte) error {
-		return errors.New("BadInputsUTxO TxId " + pos.utxo.TxHash + " TxIx 0")
+		return ledgerRejection("BadInputsUTxO TxId " + pos.utxo.TxHash + " TxIx 0")
 	}
 	h.picks = []int{transferClaimPick, 0}
 	ok, err = h.app.Step(h.env(receiver))
@@ -259,7 +258,7 @@ func TestTransferRepeatedRejectionsDropPosition(t *testing.T) {
 	h := newTransferHarness(t)
 	sender, receiver := h.users[0], h.users[1]
 	h.lock(sender, 0)
-	h.reject = func([]byte) error { return errors.New("unrecognised failure") }
+	h.reject = func([]byte) error { return ledgerRejection("unrecognised failure") }
 	for i := 0; i < transferMaxRejections; i++ {
 		require.Len(t, h.app.positions, 1, "attempt %d", i)
 		h.picks = []int{transferClaimPick, 0}
@@ -273,7 +272,7 @@ func TestTransferRepeatedRejectionsDropPosition(t *testing.T) {
 func TestTransferRejectedLockReturnsTheWalletInputs(t *testing.T) {
 	h := newTransferHarness(t)
 	balance := h.wallet.Balance()
-	h.reject = func([]byte) error { return errors.New("mempool full") }
+	h.reject = func([]byte) error { return ledgerRejection("mempool full") }
 	h.picks = []int{transferLockPick, transferAmountMin, 0}
 	ok, err := h.app.Step(h.env(h.users[0]))
 	require.NoError(t, err)
@@ -410,4 +409,29 @@ func TestTransferRandomRunVerifiesEveryStep(t *testing.T) {
 	t.Logf("locks %d, claims %d", locks, claims)
 	require.Positive(t, locks)
 	require.Positive(t, claims)
+}
+
+func TestTransferLockKeepsInputsReservedAfterATransportFailure(t *testing.T) {
+	h := newTransferHarness(t)
+	balance := h.wallet.Balance()
+	h.reject = func([]byte) error { return errTransport }
+	h.picks = []int{transferLockPick, transferAmountMin, 0}
+	ok, err := h.app.Step(h.env(h.users[0]))
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Len(t, h.app.positions, 1, "the lock may be on chain")
+	require.Less(t, h.wallet.Balance(), balance, "inputs stay reserved")
+}
+
+func TestTransferClaimKeepsCollateralReservedAfterATransportFailure(t *testing.T) {
+	h := newTransferHarness(t)
+	h.lock(h.users[0], 0)
+	balance := h.wallet.Balance()
+	h.reject = func([]byte) error { return errTransport }
+	h.picks = []int{transferClaimPick, 0}
+	ok, err := h.app.Step(h.env(h.users[1]))
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Empty(t, h.app.positions, "the claim may be on chain, so the position is spent")
+	require.Less(t, h.wallet.Balance(), balance, "collateral stays reserved")
 }
