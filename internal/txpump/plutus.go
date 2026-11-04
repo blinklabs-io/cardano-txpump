@@ -73,13 +73,16 @@ func scriptAddressFromHash(scriptHash []byte) []byte {
 // plutusOutput is a map-encoded Babbage/Conway output.
 //
 // Key 0 = address
-// Key 1 = value (lovelace only)
+// Key 1 = value (lovelace, plus Assets when there are any)
 // Key 2 = datum_option ([1, #6.24(datum)] for an inline datum)
 // Key 3 = script_ref
+//
+// Encoding goes through MarshalCBOR; the tags document the wire layout.
 type plutusOutput struct {
-	Address     []byte `cbor:"0,keyasint"`
-	Amount      uint64 `cbor:"1,keyasint"`
-	DatumOption []any  `cbor:"2,keyasint,omitempty"`
+	Address     []byte        `cbor:"0,keyasint"`
+	Amount      uint64        `cbor:"1,keyasint"`
+	Assets      []NativeAsset `cbor:"-"`
+	DatumOption []any         `cbor:"2,keyasint,omitempty"`
 	// ScriptRef is a script_ref, #6.24(bytes .cbor [language, script]).
 	ScriptRef any `cbor:"3,keyasint,omitempty"`
 }
