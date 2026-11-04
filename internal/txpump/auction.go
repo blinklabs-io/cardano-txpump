@@ -305,11 +305,14 @@ func (a *auctionApp) start(env *AppEnv, params ScriptParams, nowMs int64) (bool,
 		env.Logger.Warn("tx rejected", "action", "start", "tx_id", txID, "err", err)
 		return false, nil
 	}
+	delay := env.Cfg.confirmationDelay()
 	known, err := KnownUTxOsFromTx(txBytes)
 	if err != nil {
+		// The transaction is accepted, so its inputs are consumed; hold them
+		// until reconciliation rather than dropping them from the wallet.
+		env.Wallet.RecordAccepted(txID, held, nil, delay)
 		return false, err
 	}
-	delay := env.Cfg.confirmationDelay()
 	a.add(&auctionPosition{
 		utxo:        UTxO{TxHash: txID, Index: 0, Amount: opening},
 		known:       known,
@@ -491,12 +494,13 @@ func (a *auctionApp) submitSpend(
 		return false, nil
 	}
 	outs, err := KnownUTxOsFromTx(txBytes)
+	delay := env.Cfg.confirmationDelay()
 	if err != nil {
-		env.Wallet.ReturnUTxOs(collateral)
+		// Collateral stays reserved with the accepted transaction, as below.
+		env.Wallet.RecordAccepted(txID, held, nil, delay)
 		a.settle(pos, true, nil, false, false)
 		return false, err
 	}
-	delay := env.Cfg.confirmationDelay()
 	// Collateral is not consumed, but it stays reserved with the pending
 	// transaction: spent elsewhere first, it would make a node reject this
 	// transaction after the position was settled as spent. Reconciliation
