@@ -1,10 +1,10 @@
 module github.com/blinklabs-io/cardano-txpump
 
-go 1.26.10
+go 1.26.11
 
 require (
-	github.com/blinklabs-io/gouroboros v0.217.0
-	github.com/blinklabs-io/plutigo v0.11.1
+	github.com/blinklabs-io/gouroboros v0.220.3
+	github.com/blinklabs-io/plutigo v0.12.1
 	github.com/stretchr/testify v1.12.1
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -26,7 +26,7 @@ require (
 	github.com/utxorpc/go-codegen v0.19.2 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
