@@ -305,18 +305,18 @@ func (a *vestingApp) positionFromUTxO(
 		return nil, fmt.Errorf("decode datum: %w", err)
 	}
 	datum, ok := decoded.(*data.Constr)
-	if !ok || datum.Tag == nil || !datum.Tag.IsUint64() || datum.Tag.Uint64() != 0 || len(datum.Fields) != 3 {
+	if !ok || datum.Tag == nil || !datum.Tag.IsUint64() || datum.Tag.Uint64() != 0 || len(datum.Fields()) != 3 {
 		return nil, fmt.Errorf("datum is not a vesting record")
 	}
-	lock, ok := datum.Fields[0].(*data.Integer)
+	lock, ok := datum.Fields()[0].(*data.Integer)
 	if !ok || lock.Inner == nil || !lock.Inner.IsInt64() {
 		return nil, fmt.Errorf("invalid lock deadline")
 	}
-	ownerHash, ok := datum.Fields[1].(*data.ByteString)
+	ownerHash, ok := datum.Fields()[1].(*data.ByteString)
 	if !ok || len(ownerHash.Inner) != 28 {
 		return nil, fmt.Errorf("invalid owner credential")
 	}
-	beneficiaryHash, ok := datum.Fields[2].(*data.ByteString)
+	beneficiaryHash, ok := datum.Fields()[2].(*data.ByteString)
 	if !ok || len(beneficiaryHash.Inner) != 28 {
 		return nil, fmt.Errorf("invalid beneficiary credential")
 	}
